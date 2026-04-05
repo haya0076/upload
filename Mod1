@@ -1,0 +1,231 @@
+Option Explicit
+
+
+'Private Sub Workbook_BeforeClose(Cancel As Boolean)
+'    Call ExportBas
+'    ThisWorkbook.Save
+'End Sub
+'
+'Private Sub doClose()
+'    ThisWorkbook.Close
+'End Sub
+'
+'Private Sub Workbook_Open()
+'    Call SetKeyBind
+'End Sub
+
+
+'==============================
+' Entry_Const.bas
+'==============================
+
+'' API
+
+Public Const CF_UNICODETEXT As Long = 13
+
+Public Const HWND_TOPMOST = -1
+Public Const HWND_NOTOPMOST = -2
+
+Public Const SWP_NOMOVE = &H2
+Public Const SWP_NOSIZE = &H1
+
+
+'' ENTRY_MAIN
+
+'fCnvM スプリッタ
+Public Const gSplitter_MMC = "@@"
+Public Const gExpandLabel = "_>> "
+
+' マクロエクスポート
+Public Const gBasExportPath = "C:\Users\thaya\OneDrive\ドキュメント\01_WORKSPACE\ExcelMacro\Export\"     ' ←保存先"
+
+'' N[] 関連 （今のところ未使用）
+Public Const FolderPath_N = "C:\Users\thaya\OneDrive\デスクトップ\BKP_WORK\TextRepo\"
+
+
+'' UI MODE
+
+Public gIsUIMode As Boolean
+
+
+'==============================
+' Entry_Config.bas
+'==============================
+
+' [DEF] 設定されたマクロ参照ワークブックを取得
+Public Function p_wbName_main()
+    '設定されていない場合
+    If GetCrrBookName = "" Then Stop
+    '現在のブック名と作業中のブック名が異なる
+    If GetCrrBookName <> ActiveWorkbook.name Then Stop
+    p_wbName_main = GetCrrBookName
+End Function
+
+' [DEF] XLMA ブックを取得
+Public Function p_wbName_ma()
+    p_wbName_ma = ThisWorkbook.name
+End Function
+
+' [DEF]
+Sub SetCrrSht()
+    Names.Add name:="CurrentSheetName", RefersTo:=ActiveSheet.name
+    Application.StatusBar = "シート名をセット : " & ActiveSheet.name
+End Sub
+
+Sub SelectCrrSht()
+    ActiveWorkbook.Sheets(Evaluate("CurrentSheetName")).Select
+End Sub
+
+' [DEF] 現在のブック名を設定
+Sub SetCrrBookName()
+    Names.Add name:="CurrentBookName", RefersTo:=ActiveWorkbook.name
+    Application.StatusBar = "ブック名をセット : " & ActiveWorkbook.name
+End Sub
+
+' [DEF] 現在のブック名を取得
+Function GetCrrBookName() As String
+    If Evaluate("CurrentBookName") = "" Then Call SetCrrBookName
+    GetCrrBookName = Evaluate("CurrentBookName")
+End Function
+
+' [DEF] 設定中のワークブックのフルパスを取得
+Function GetTargetWb_FullPath() As String
+    GetTargetWb_FullPath = Workbooks(p_wbName_main()).Path & "\" & Workbooks(p_wbName_main()).name
+End Function
+
+' [DEF] 設定中のワークブック名を取得
+Function GetTargetWb_Name() As String
+    GetTargetWb_Name = GetCrrBookName
+    ' #TODO : [確認] 廃止
+    ' Workbooks(p_wbName_main()).Name
+End Function
+
+
+
+'==============================
+' Entry_KeyBind.bas
+'==============================
+
+
+ Sub SetKeyBind()
+
+    Application.OnKey "+%{DOWN}"
+    Application.OnKey "+%{RIGHT}"
+    Application.OnKey "+%{LEFT}"
+    Application.OnKey "+%{UP}"
+    
+    Application.OnKey "+^%{DOWN}"
+    Application.OnKey "+^%{UP}"
+    Application.OnKey "+^%{LEFT}"
+    Application.OnKey "+^%{RIGHT}"
+    
+    Application.OnKey "+^{DOWN}"
+    Application.OnKey "+^{UP}"
+    Application.OnKey "+^{LEFT}"
+    Application.OnKey "+^{RIGHT}"
+    
+    Application.OnKey "+^%n"
+    Application.OnKey "^n"
+    Application.OnKey "+^m"
+    Application.OnKey "+^o"
+    
+    
+    Call load_kb_LinkSht
+    Call load_kb_color
+    Call load_kb_Window
+    Call load_kb_SetParam
+    Call load_kb_rowExpand
+    Call load_kb_EditRange
+    Call load_kb_util
+    
+    ' M N L 系を一本化したい
+'    Application.OnKey "+^%", "OpenOrCreateTxtByActiveCellNKey"
+    
+    
+' まだセットしてない
+' Calc
+
+'失敗している
+' Application.OnKey "^+m", "RunKey_M"
+
+' Application.OnKey "^+m", ""
+' Application.OnKey "^+%m", ""
+'
+ Application.OnKey "^+%r", "RunMacroFromCell"
+
+End Sub
+
+Sub load_kb_util()
+    Application.OnKey "^u", "ToggleUIMode"
+    Application.OnKey "^t", "ToggleTopMode"
+End Sub
+
+Sub load_kb_SetParam()
+    Application.OnKey "+^%b", "SetCrrBookName"
+    Application.OnKey "+^%s", "SetCrrSht"
+    Application.OnKey "+^%h", "SelectCrrSht"
+End Sub
+
+Sub load_kb_Window()
+    Application.OnKey "+^%n", "OpenNewWindow"
+End Sub
+
+Sub load_kb_rowExpand()
+    Application.OnKey "^+h", "Hidden_rows"
+    Application.OnKey "^+e", "Expand_rows"
+End Sub
+
+Sub load_kb_color()
+'    Application.OnKey "^+%u", "UnderlineBottomOfSelection" ' 下線を引く
+    Application.OnKey "^+r", "SetRedBold"
+    Application.OnKey "^+b", "SetBlueBold"
+    Application.OnKey "+^c", "ResetFont" ' 選択行の装飾を解除する
+    Application.OnKey "^r", "HighlightFromClipboard_Red" ' 選択範囲内に含まれるクリップボードの文字を赤太文字にする
+End Sub
+
+
+
+' [DEF] シート管理、L[] シート操作
+Sub load_kb_LinkSht()
+    Application.OnKey "+^%u", "RenameSheetAndUpdateLinks"
+    Application.OnKey "+^%d", "DeleteLinkSheet"
+    Application.OnKey "+^%m", "JumpOrCreateSheetFromLink_Move"
+    Application.OnKey "+^%o", "JumpOrCreateSheetFromLink_Open"
+End Sub
+
+
+' [DEF] シート操作
+Sub load_kb_EditRange()
+    Application.OnKey "+%{DOWN}", "InsertRange_Down"
+    Application.OnKey "+%{RIGHT}", "InsertRange_Right"
+    Application.OnKey "+%{LEFT}", "InsertRange_Left"
+    Application.OnKey "+%{UP}", "InsertRange_Up"
+    
+    Application.OnKey "+^%{DOWN}", "InsertRow_Down"
+    Application.OnKey "+^%{UP}", "InsertRow_Up"
+    Application.OnKey "+^%{LEFT}", "InsertCol_Left"
+    Application.OnKey "+^%{RIGHT}", "InsertCol_Right"
+    
+    Application.OnKey "%{UP}", "MoveRowUp"     ' Alt + ↑
+    Application.OnKey "%{DOWN}", "MoveRowDown" ' Alt + ↓
+    
+    Application.OnKey "+^a", "Calc"
+        
+        
+    ' 動作未確認
+'    Application.OnKey "+%n", "Pg_NextPage"
+'    Application.OnKey "+%p", "Pg_PrevPage"
+    
+    Application.OnKey "^p", "fPasteSpecial"
+    Application.OnKey "+%s", "SortSheetsByName"
+    Application.OnKey "+%h", "HideEmptyRowsBetweenData"
+
+
+End Sub
+
+
+
+'==============================
+' Entry_Main.bas
+'==============================
+
