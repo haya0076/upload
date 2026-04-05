@@ -1,0 +1,4056 @@
+'==============================
+' Core_WinAPI.bas
+'==============================
+
+
+'==============================
+' ■ Clipboard API
+'==============================
+
+#If VBA7 Then
+
+Private Declare PtrSafe Function OpenClipboard Lib "user32" (ByVal hWnd As LongPtr) As Long
+Private Declare PtrSafe Function CloseClipboard Lib "user32" () As Long
+Private Declare PtrSafe Function GetClipboardData Lib "user32" (ByVal wFormat As Long) As LongPtr
+Private Declare PtrSafe Function GlobalLock Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
+Private Declare PtrSafe Function GlobalUnlock Lib "kernel32" (ByVal hMem As LongPtr) As Long
+Private Declare PtrSafe Function lstrlenW Lib "kernel32" (ByVal lpString As LongPtr) As Long
+Private Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" ( _
+    ByVal Destination As LongPtr, ByVal Source As LongPtr, ByVal length As Long)
+
+#End If
+
+
+'==============================
+' ■ Window API
+'==============================
+
+#If VBA7 Then
+
+Private Declare PtrSafe Function SetWindowPos Lib "user32" ( _
+    ByVal hWnd As LongPtr, _
+    ByVal hWndInsertAfter As LongPtr, _
+    ByVal X As Long, ByVal Y As Long, _
+    ByVal cx As Long, ByVal cy As Long, _
+    ByVal uFlags As Long) As Long
+
+#Else
+
+Private Declare Function SetWindowPos Lib "user32" ( _
+    ByVal hWnd As Long, _
+    ByVal hWndInsertAfter As Long, _
+    ByVal X As Long, ByVal Y As Long, _
+    ByVal cx As Long, ByVal cy As Long, _
+    ByVal uFlags As Long) As Long
+
+#End If
+
+Public Function GetClipboardText() As String
+    Dim hMem As LongPtr
+    Dim lpMem As LongPtr
+    Dim length As Long
+    Dim buffer As String
+
+    If OpenClipboard(0&) = 0 Then Exit Function
+
+    hMem = GetClipboardData(CF_UNICODETEXT)
+    If hMem <> 0 Then
+        lpMem = GlobalLock(hMem)
+        If lpMem <> 0 Then
+            length = lstrlenW(lpMem)
+            buffer = String$(length, vbNullChar)
+            CopyMemory StrPtr(buffer), lpMem, length * 2
+            GlobalUnlock hMem
+            GetClipboardText = buffer
+        End If
+    End If
+
+    CloseClipboard
+End Function
+
+
+' TOGGLE WINDOW ===================================================================
+Sub ToggleTopMode()
+
+    If gIsUIMode = False Then
+        AlwaysOnTop_ON
+        gIsUIMode = True
+    Else
+        AlwaysOnTop_OFF
+        gIsUIMode = False
+    End If
+
+End Sub
+
+Sub AlwaysOnTop_ON()
+
+    Dim hWnd As LongPtr
+    hWnd = Application.hWnd
+
+    SetWindowPos hWnd, HWND_TOPMOST, 0, 0, 0, 0, _
+        SWP_NOMOVE Or SWP_NOSIZE
+
+End Sub
+
+Sub AlwaysOnTop_OFF()
+
+    Dim hWnd As LongPtr
+    hWnd = Application.hWnd
+
+    SetWindowPos hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, _
+        SWP_NOMOVE Or SWP_NOSIZE
+
+End Sub
+
+
+
+'==============================
+' Mod_01_MacroMaintenance.bas
+'==============================
+
+
+'Sub BuildSingleBas()
+'
+'    Dim folderPath As String
+'    Dim outputFile As String
+'    Dim fileName As String
+'    Dim fileNo As Integer
+'    Dim outNo As Integer
+'    Dim lineText As String
+'
+'    folderPath = gBasExportPath
+'    outputFile = folderPath & "ALL_IN_ONE.bas"
+'
+'    ' 出力
+'    outNo = FreeFile
+'    Open outputFile For Output As #outNo
+'
+'    fileName = Dir(folderPath & "*.bas")
+'
+'    Do While fileName <> ""
+'
+'        fileNo = FreeFile
+'
+'        On Error Resume Next
+'        Open folderPath & fileName For Input As #fileNo
+'
+'        If Err.Number <> 0 Then
+'            Debug.Print "開けない: " & fileName
+'            Err.Clear
+'            GoTo ContinueLoop
+'        End If
+'        On Error GoTo 0
+'
+'        ' ヘッダ
+'        Print #outNo, "'=============================="
+'        Print #outNo, "' " & fileName
+'        Print #outNo, "'=============================="
+'
+'        Do Until EOF(fileNo)
+'            Line Input #fileNo, lineText
+'
+'            If Left(lineText, 17) <> "Attribute VB_Name" Then
+'                Print #outNo, lineText
+'            End If
+'
+'        Loop
+'
+'        Close #fileNo
+'
+'ContinueLoop:
+'        fileName = Dir
+'
+'    Loop
+'
+'    Close #outNo
+'
+'    MsgBox "結合完了"
+'
+'End Sub
+
+Sub BuildSimple()
+
+    Dim folderPath As String
+    Dim outputFile As String
+    Dim outNo As Integer
+    
+    folderPath = gBasExportPath
+    outputFile = folderPath & "ALL_IN_ONE.bas"
+    
+    outNo = FreeFile
+    Open outputFile For Output As #outNo
+    
+    '==============================
+    ' ■ 先頭
+    '==============================
+    
+    Print #outNo, ""
+    Print #outNo, vbCrLf
+    
+    '==============================
+    ' ■ A：Entry系
+    '==============================
+    
+    Call AppendGroup(outNo, folderPath, True)
+    
+    '==============================
+    ' ■ B：その他
+    '==============================
+    
+    Call AppendGroup(outNo, folderPath, False)
+    
+    Close #outNo
+    
+    MsgBox "完了"
+
+End Sub
+
+
+Sub AppendGroup(outNo As Integer, folderPath As String, isEntry As Boolean)
+
+    Dim fileName As String
+    
+    fileName = Dir(folderPath & "*.bas")
+    
+    Do While fileName <> ""
+        
+        If IsEntryFile(fileName) = isEntry Then
+            Call AppendFile(outNo, folderPath, fileName)
+        End If
+        
+        fileName = Dir
+        
+    Loop
+
+End Sub
+
+Function IsEntryFile(fileName As String) As Boolean
+
+    If fileName = "Entry_Config.bas" _
+    Or fileName = "Entry_Const.bas" _
+    Or fileName = "Entry_KeyBind.bas" _
+    Or fileName = "Entry_Main.bas" Then
+    
+        IsEntryFile = True
+        
+    End If
+
+End Function
+
+
+Sub AppendFile(outNo As Integer, folderPath As String, fileName As String)
+
+    Dim fileNo As Integer
+    Dim lineText As String
+    
+    fileNo = FreeFile
+    
+    Open folderPath & fileName For Input As #fileNo
+    
+    Print #outNo, "'--- " & fileName & " ---"
+    
+    Do Until EOF(fileNo)
+        
+        Line Input #fileNo, lineText
+        
+        ' 除外
+        If Left(lineText, 17) = "Attribute VB_Name" Then GoTo ContinueLoop
+        If Trim(lineText) = "" Then GoTo ContinueLoop
+        
+        Print #outNo, lineText
+        
+ContinueLoop:
+    Loop
+    
+    Close #fileNo
+    
+    Print #outNo, vbCrLf
+
+End Sub
+
+
+
+
+
+
+
+
+' [DEF] SelectionからBasファイルを連続作成
+Sub CreateModuleInVBE()
+
+    Dim vbComp As Object
+    Dim c As Range
+    
+    For Each c In Selection
+        Set vbComp = ThisWorkbook.VBProject.VBComponents.Add(1)
+        vbComp.name = c.Value
+'        vbComp.CodeModule.AddFromString _
+'            "Public Function Test()" & vbCrLf & _
+'            "    Test = ""OK""" & vbCrLf & _
+'            "End Function"
+    Next c
+    
+End Sub
+
+
+Sub ExportBas()
+    Dim comp As Object
+
+    For Each comp In ThisWorkbook.VBProject.VBComponents
+        If comp.Type = 1 Then ' 標準モジュール（.bas）
+            comp.Export gBasExportPath & comp.name & ".bas"
+        End If
+    Next
+End Sub
+
+' [DEF] キーワード抽出（１：ファイル名　２：行番号　３：コード尾　４：DEFコメント）
+Sub ExtractFromFile_WithDEF(inptPattern As String, inptSheet As String)
+
+    Dim filePath As Variant
+    Dim lineText As String
+    Dim lineNo As Long
+    Dim fileName As String
+    
+    Dim regEx As Object
+    Dim ts As Object
+    Dim fso As Object
+
+    Dim ws As Worksheet
+    Set ws = Workbooks(p_wbName_main()).Sheets(inptSheet)
+
+    ws.Cells.Clear
+
+    ' ヘッダ
+    ws.Cells(1, 1) = "File"
+    ws.Cells(1, 2) = "Line"
+    ws.Cells(1, 3) = "Code"
+    ws.Cells(1, 4) = "DEF"
+
+    Dim outputRow As Long
+    outputRow = 2
+
+    ' 正規表現（関数検出）
+    Set regEx = CreateObject("VBScript.RegExp")
+    regEx.pattern = inptPattern
+    regEx.IgnoreCase = True
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    With Application.FileDialog(msoFileDialogFilePicker)
+        .AllowMultiSelect = True
+        If .Show <> -1 Then Exit Sub
+
+        For Each filePath In .SelectedItems
+            
+            Set ts = fso.OpenTextFile(filePath, 1)
+            fileName = fso.GetFileName(filePath)
+            
+            lineNo = 0
+            
+            Dim defBuffer As String
+            defBuffer = ""
+            
+            Do While Not ts.AtEndOfStream
+                
+                lineText = ts.ReadLine
+                lineNo = lineNo + 1
+
+                ' --- DEF検出 ---
+                If InStr(lineText, "[DEF]") > 0 Then
+                    defBuffer = Trim(Replace(lineText, "'", "")) ' コメント記号除去
+                    GoTo ContinueLoop
+                End If
+
+                ' --- 関数検出 ---
+                If regEx.test(lineText) Then
+                    
+                    ws.Cells(outputRow, 1).Value = fileName
+                    ws.Cells(outputRow, 2).Value = lineNo
+                    ws.Cells(outputRow, 3).Value = lineText
+                    ws.Cells(outputRow, 4).Value = defBuffer
+                    
+                    outputRow = outputRow + 1
+                    
+                    defBuffer = ""
+                    
+                End If
+
+ContinueLoop:
+            Loop
+
+            ts.Close
+
+        Next filePath
+    End With
+
+    MsgBox "抽出完了：" & outputRow - 2 & "件"
+
+End Sub
+
+
+'改良版 ※シートクリア処理等はしていない
+Sub ListFunctions_Final()
+
+    Dim folderPath As String
+    Dim fileName As String
+    Dim filePath As String
+    Dim lineText As String
+    Dim logicalLine As String
+    Dim fileNo As Integer
+    Dim row As Long
+    
+    Dim fncComment As String
+    
+    folderPath = gBasExportPath
+    row = 1
+    
+    ' 見出し
+    Cells(row, 1).Value = "ファイル"
+    Cells(row, 2).Value = "名称"
+    Cells(row, 3).Value = "機能"
+    Cells(row, 4).Value = "定義"
+    row = row + 1
+    
+    fileName = Dir(folderPath & "*.bas")
+    
+    Do While fileName <> ""
+        
+        filePath = folderPath & fileName
+        fileNo = FreeFile
+        
+        Open filePath For Input As #fileNo
+        
+        logicalLine = ""
+        fncComment = ""
+        
+        Do Until EOF(fileNo)
+            Line Input #fileNo, lineText
+            
+            ' =========================
+            ' ■ コメントタグ取得
+            ' =========================
+            If Left(Trim(lineText), 1) = "'" Then
+                If InStr(LCase(lineText), "[fnc]") > 0 Then
+                    fncComment = Replace(lineText, "'", "")
+                    fncComment = Trim(fncComment)
+                End If
+            End If
+            
+            ' =========================
+            ' ■ 改行結合
+            ' =========================
+            If Right(Trim(lineText), 1) = "_" Then
+                logicalLine = logicalLine & " " & _
+                              Left(Trim(lineText), Len(Trim(lineText)) - 1)
+            Else
+                logicalLine = logicalLine & " " & Trim(lineText)
+                
+                ' =========================
+                ' ■ 判定処理
+                ' =========================
+                Call CheckAndOutput(logicalLine, fileName, fncComment, row)
+                
+                logicalLine = ""
+            End If
+            
+        Loop
+        
+        Close #fileNo
+        fileName = Dir
+        
+    Loop
+    
+    MsgBox "一覧作成完了"
+
+End Sub
+
+
+Sub CheckAndOutput(ByVal logicalLine As String, _
+                   ByVal fileName As String, _
+                   ByRef fncComment As String, _
+                   ByRef row As Long)
+
+    Dim lineCheck As String
+    lineCheck = LCase(Trim(logicalLine))
+    
+    ' コメント行はスキップ（タグは事前取得済み）
+    If Left(lineCheck, 1) = "'" Then Exit Sub
+    
+    ' ノイズ除外
+'    If lineCheck Like "end *" Then Exit Sub
+'    If lineCheck Like "exit *" Then Exit Sub
+'    If InStr(lineCheck, "declare") > 0 Then Exit Sub
+    
+    If lineCheck Like "function *" _
+    Or lineCheck Like "sub *" _
+    Or lineCheck Like "public function *" _
+    Or lineCheck Like "public sub *" _
+    Or lineCheck Like "private function *" _
+    Or lineCheck Like "private sub *" Then
+    Else
+        Exit Sub
+    End If
+    
+    ' =========================
+    ' ■ 関数・Sub判定（柔軟）
+    ' =========================
+    If lineCheck Like "*function*" Or lineCheck Like "*sub*" Then
+        
+        ' "("がある＝定義っぽい
+        If InStr(lineCheck, "(") > 0 Then
+            
+            Cells(row, 1).Value = fileName
+            Cells(row, 2).Value = ExtractName(lineCheck)
+            Cells(row, 3).Value = fncComment
+            Cells(row, 4).Value = logicalLine
+            
+            row = row + 1
+            fncComment = ""
+            
+        End If
+        
+    End If
+
+End Sub
+
+Function ExtractName(lineText As String) As String
+
+    Dim temp As String
+    temp = lineText
+    
+    If InStr(temp, "function") > 0 Then
+        temp = Split(temp, "function")(1)
+    ElseIf InStr(temp, "sub") > 0 Then
+        temp = Split(temp, "sub")(1)
+    End If
+    
+    temp = Trim(temp)
+    ExtractName = Split(temp, "(")(0)
+
+End Function
+
+
+'==============================
+' Mod_10_WorkSheetTmp.bas
+'==============================
+
+
+Function fCnvTD_E(ByVal inptValue As String)
+
+    fCnvTD_E = "' #TODO[直近] " & inptValue
+
+End Function
+
+
+'==============================
+' Mod_WS_CellManipulate.bas
+'==============================
+
+
+Sub InsertRange_Left()
+    Selection.Delete Shift:=xlToLeft
+End Sub
+
+Sub InsertRange_Right()
+    Selection.Insert Shift:=xlToRight, CopyOrigin:=xlFormatFromLeftOrAbove
+End Sub
+
+Sub InsertRange_Down()
+    Selection.Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+End Sub
+
+Sub InsertRange_Up()
+    Selection.Delete Shift:=xlUp
+End Sub
+
+Sub InsertRow_Down()
+    Dim r As Range
+    Set r = ActiveCell
+    Call selectRow
+    Selection.Insert Shift:=xlDown, CopyOrigin:=xlFormatFromLeftOrAbove
+    r.Select
+End Sub
+
+Sub InsertRow_Up()
+    Dim sCell As String
+    sCell = ActiveCell.Address
+    Call selectRow
+    Selection.Delete Shift:=xlUp
+    Range(sCell).Select
+End Sub
+
+Sub InsertCol_Left()
+    Dim sCell As String
+    sCell = ActiveCell.Address
+    Call selectCol
+    Selection.Delete Shift:=xlToLeft
+    Range(sCell).Select
+End Sub
+
+Sub InsertCol_Right()
+    Dim sCell As String
+    sCell = ActiveCell.Address
+    Call selectCol
+    Selection.Insert Shift:=xlToRight, CopyOrigin:=xlFormatFromLeftOrAbove
+    Range(sCell).Select
+End Sub
+
+Sub Calc()
+    Selection.Replace What:="=", Replacement:="=", LookAt:=xlPart, _
+        SearchOrder:=xlByRows, MatchCase:=False, SearchFormat:=False, _
+        ReplaceFormat:=False, FormulaVersion:=xlReplaceFormula2
+End Sub
+
+Sub selectRow()
+    Dim r As Range
+    Set r = Selection
+    Range(Cells(Selection(1).row, 1), _
+          Cells(Selection(Selection.Count).row, Columns.Count)).Select
+End Sub
+
+Sub selectCol()
+    Dim r As Range
+    Set r = Selection
+    Range(Cells(1, Selection(1).Column), _
+          Cells(Rows.Count, Selection(Selection.Count).Column)).Select
+End Sub
+
+
+
+
+'==============================
+' Mod_WS_ExpandRow.bas
+'==============================
+
+
+' ① 子階層から「非表示」
+Public Sub Hidden_rows()
+
+    Dim ws As Worksheet
+    Dim r As Long, c As Long
+    Dim parentCol As Long
+    Dim startRow As Long, endRow As Long
+    Dim i As Long
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    Set ws = Selection.Worksheet
+    r = Selection.row
+    c = Selection.Column
+
+    ' 左に親があるか確認
+    If c = 1 Then
+        MsgBox "親階層がありません", vbExclamation
+        Exit Sub
+    End If
+
+    parentCol = c - 1
+
+    ' 上方向に「親」を探す
+    For i = r To 1 Step -1
+        If ws.Cells(i, parentCol).Value <> "" Then
+            startRow = i
+            Exit For
+        End If
+    Next
+
+    If startRow = 0 Then Exit Sub
+
+    ' 次の親を探す
+    endRow = ws.Rows.Count
+
+    For i = startRow + 1 To ws.Rows.Count
+        If ws.Cells(i, parentCol).Value <> "" Then
+            endRow = i - 1
+            Exit For
+        End If
+    Next
+
+    ' 範囲非表示（親の次の行から）
+    If endRow >= startRow + 1 Then
+        ws.Rows((startRow + 1) & ":" & endRow).Hidden = True
+    End If
+
+    For i = c - 1 To c
+        Call SetDoubleBorder(startRow, endRow, i)
+    Next
+ 
+     '装飾を追加
+    Cells(startRow, c - 1).Value = gExpandLabel & Cells(startRow, c - 1)
+
+End Sub
+
+
+'② 親階層から「展開」
+Public Sub Expand_rows()
+
+    Dim ws As Worksheet
+    Dim r As Long, c As Long
+    Dim startRow As Long, endRow As Long
+    Dim i As Long
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    Set ws = Selection.Worksheet
+    r = Selection.row
+    c = Selection.Column
+
+    ' 親行
+    startRow = r
+
+    ' 次の親を探す
+    endRow = ws.Rows.Count
+
+    For i = r + 1 To ws.Rows.Count
+        If ws.Cells(i, c).Value <> "" Then
+            endRow = i - 1
+            Exit For
+        End If
+    Next
+
+    ' 範囲表示
+    If endRow >= startRow + 1 Then
+        ws.Rows((startRow + 1) & ":" & endRow).Hidden = False
+    End If
+
+    For i = c To c + 1
+        Call ClearDoubleBorder(startRow, endRow, i)
+    Next
+    
+     '装飾を外す
+    Cells(startRow, c).Value = Replace(Cells(startRow, c), gExpandLabel, "")
+       
+
+End Sub
+
+Sub SetDoubleBorder(ByVal startRow As Long, ByVal endRow As Long, ByVal targetCol As Long)
+
+    With ActiveSheet
+
+        ' 親との境界（上側）
+        With .Cells(startRow, targetCol).Borders(xlEdgeBottom)
+            .LineStyle = xlDouble
+            .Weight = xlMedium
+        End With
+        
+    End With
+
+End Sub
+
+' [DEF] ボーダーのクリア
+Sub ClearDoubleBorder(ByVal startRow As Long, ByVal endRow As Long, ByVal targetCol As Long)
+
+    With ActiveSheet
+        .Cells(startRow, targetCol).Borders(xlEdgeBottom).LineStyle = xlNone
+    End With
+
+End Sub
+
+
+
+
+
+
+
+
+
+'==============================
+' Mod_WS_fncL.bas
+'==============================
+
+
+'' L[] 関連
+' シート名をデバッグへ出力
+Sub printSheets()
+    Dim ws As Worksheet
+    For Each ws In ActiveWorkbook.Sheets
+        Debug.Print ws.name
+    Next ws
+End Sub
+
+Function GetSelectionAddress(ByVal inptSel As Range) As String
+    GetSelectionAddress = inptSel.Address
+End Function
+
+'引数なし実行
+Public Sub RenameSheetsAndReplaceText_nothing()
+    RenameSheetsAndReplaceText
+End Sub
+
+'Public Sub RenameSheetsAndReplaceText(Optional ByVal strRng As String = "")
+'    Dim wsActive As Worksheet
+'    Set wsActive = ActiveSheet
+'
+'    Dim rngSel As Range
+'    Set rngSel = Selection
+'
+'    If strRng <> "" Then Set rngSel = Range(strRng)
+'
+'    If rngSel.Columns.Count < 2 Then
+'        MsgBox "2列（旧名 / 新名）を選択してください"
+'        Exit Sub
+'    End If
+'
+'    Dim R As Long
+'    For R = 1 To rngSel.Rows.Count
+'        Call ProcessOneRow(wsActive, rngSel, R)
+'    Next R
+'
+'    wsActive.Activate
+'End Sub
+
+Public Sub RenameSheetsAndReplaceText(Optional ByVal strRng As String = "")
+    Dim wsActive As Worksheet
+    Set wsActive = ActiveSheet
+
+    Dim rngSel As Range
+    Set rngSel = Selection
+    If strRng <> "" Then Set rngSel = Range(strRng)
+
+    If rngSel.Columns.Count < 2 Then
+        MsgBox "2列（旧名 / 新名）を選択してください"
+        Exit Sub
+    End If
+
+    Dim r As Long
+    Dim prevSheet As Worksheet
+    Set prevSheet = wsActive   ' ← 基準：マクロを実行したシート
+
+    For r = 1 To rngSel.Rows.Count
+        Dim wsTarget As Worksheet
+
+        ' 既存処理（名前変更など）
+        Set wsTarget = ProcessOneRow(wsActive, rngSel, r)
+
+        ' 並び替え：前のシートの後ろへ
+        If Not wsTarget Is Nothing Then
+            wsTarget.Move After:=prevSheet
+            Set prevSheet = wsTarget
+        End If
+    Next r
+
+    wsActive.Activate
+End Sub
+
+Function GetSheetIndexInfo(idx As Long) As String
+    Dim ws As Worksheet
+    Dim targetName As String
+
+    On Error Resume Next
+    Set ws = ActiveWorkbook.Sheets(CLng(idx))
+    On Error GoTo 0
+
+    If ws Is Nothing Then
+        GetSheetIndexInfo = "EOS"
+    Else
+        GetSheetIndexInfo = ws.name
+    End If
+End Function
+
+'Private Sub ProcessOneRow(wsActive As Worksheet, rngSel As Range, rowIndex As Long)
+'
+'    Dim oldName As String
+'    Dim newName As String
+'
+'    wsActive.Cells(rngSel(rowIndex, 1).Row, rngSel(1, 1).Column - 1).Value = ""
+'    oldName = wsActive.Cells(rngSel(rowIndex, 1).Row, rngSel(1, 1).Column).Value
+'    newName = wsActive.Cells(rngSel(rowIndex, 1).Row, rngSel(1, 1).Column + 1).Value
+'
+'    If oldName = "" Or newName = "" Then Exit Sub
+'    If oldName = newName Then Exit Sub
+'
+'    Dim wsTarget As Worksheet
+'    Set wsTarget = GetSheetIfExists(oldName)
+'
+'    If wsTarget Is Nothing Then Exit Sub
+'
+'    wsTarget.Move After:=ActiveWorkbook.Sheets(ActiveWorkbook.Sheets.Count)
+'    wsTarget.Name = newName
+'
+'    wsActive.Cells(rngSel(rowIndex, 1).Row, rngSel(1, 1).Column - 1).Value = "R"
+'
+'    Call ReplaceSheetLinkText(oldName, newName)
+'
+'End Sub
+
+Function ProcessOneRow(wsActive As Worksheet, rngSel As Range, r As Long) As Worksheet
+    Dim oldName As String
+    Dim newName As String
+
+    oldName = rngSel.Cells(r, 1).Value
+    newName = rngSel.Cells(r, 2).Value
+    
+    On Error Resume Next
+    Set ProcessOneRow = Worksheets(oldName)
+    On Error GoTo 0
+
+    If ProcessOneRow Is Nothing Then Exit Function
+
+    ' シート名が「空欄」もしくは「変更なし」であれば名前を変更せずに終了する
+    If newName = "" Or oldName = newName Then
+        Exit Function
+    End If
+    
+    Call RenameLinkSheet(oldName, newName)
+'    Call ReplaceSheetLinkText(oldName, newName) ’やたら時間がかかる？
+    ProcessOneRow.name = newName
+    
+End Function
+
+ Function GetSheetIfExists(sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetSheetIfExists = ActiveWorkbook.Sheets(sheetName)
+    On Error GoTo 0
+End Function
+
+ Sub ReplaceSheetLinkText(oldName As String, newName As String)
+
+    Dim ws As Worksheet
+    Dim cell As Range
+
+    For Each ws In ActiveWorkbook.Sheets
+        For Each cell In ws.UsedRange.Cells
+            If Not IsError(cell.Value) Then
+                If InStr(cell.Value, "L[" & oldName & "]") > 0 Then
+                    cell.Value = Replace(cell.Value, _
+                        "L[" & oldName & "]", _
+                        "L[" & newName & "]")
+                End If
+            End If
+        Next cell
+    Next ws
+
+End Sub
+
+' シート上のM[]を探す
+Sub ExtractMTags()
+
+    Dim ws As Worksheet
+    Dim rng As Range
+    Dim cell As Range
+    Dim regEx As Object
+    Dim matches As Object
+    Dim match As Object
+    Dim row As Long
+    
+    For Each ws In ActiveWorkbook.Worksheets
+        Set rng = ws.UsedRange
+        
+        Set regEx = CreateObject("VBScript.RegExp")
+        
+        With regEx
+            .pattern = "M\[[^\]]+\]"
+            .Global = True
+        End With
+        
+        row = 1
+        
+        For Each cell In rng
+        
+            If Not IsError(cell.Value) Then
+            
+                If Len(cell.Value) > 0 Then
+                    
+                    If regEx.test(cell.Value) Then
+                        
+                        Set matches = regEx.Execute(cell.Value)
+                        
+                        For Each match In matches
+                            Cells(row, 10).Value = match.Value ' 出力列
+                            row = row + 1
+                        Next
+                        
+                    End If
+                    
+                End If
+                
+            End If
+            
+        Next
+    Next ws
+    
+    MsgBox "抽出完了"
+
+End Sub
+
+' L[] 変換
+Public Function fCnvL(ByVal inptShtName As String) As String
+    fCnvL = "L[" & inptShtName & "]"
+End Function
+
+
+' [DEF] セル値のシートへ移動する（存在しなければ新規作成）
+Sub JumpOrCreateSheetFromLink_Move()
+    Dim strSheetName As String
+    strSheetName = GetSheetName_JumpOrCreateSheetFromLink()
+    If strSheetName <> "" Then
+        Sheets(strSheetName).Select
+    End If
+End Sub
+
+' [DEF] セル値のシートを新しいウィンドウで表示（存在しなければ新規作成）
+Sub JumpOrCreateSheetFromLink_Open()
+    Dim strSheetName As String
+    strSheetName = GetSheetName_JumpOrCreateSheetFromLink()
+    If strSheetName <> "" Then
+        openNew_TargetSheet_Awb strSheetName
+    End If
+End Sub
+
+' [DEF] 選択したL[]を別ブックへ一括移動
+Sub MoveSheets_From_L_Cells()
+
+    Dim cell As Range
+    Dim txt As String
+    Dim sheetName As String
+    Dim wbTarget As Workbook
+    Dim wbSource As Workbook
+    Dim filePath As Variant
+    Dim sh As Worksheet
+    
+    Dim moveList As Object
+    Set moveList = CreateObject("Scripting.Dictionary")
+    
+    Set wbSource = ThisWorkbook
+
+    '========================
+    '① L[]の回収
+    '========================
+    For Each cell In Selection
+        If VarType(cell.Value) = vbString Then
+            txt = cell.Value
+            
+            If Left(txt, 2) = "L[" And InStr(txt, "]") > 0 Then
+                sheetName = Mid(txt, 3, InStr(txt, "]") - 3)
+                
+                If sheetName <> "" Then
+                    moveList(sheetName) = True '重複排除
+                End If
+            End If
+        End If
+    Next
+
+    If moveList.Count = 0 Then
+        MsgBox "L[]が見つかりません"
+        Exit Sub
+    End If
+
+    '========================
+    '② 移動先ブック選択
+    '========================
+    filePath = Application.GetOpenFilename( _
+        "Excelファイル (*.xlsx;*.xlsm), *.xlsx;*.xlsm", , "移動先ブックを選択")
+
+    If filePath = False Then Exit Sub
+
+    Set wbTarget = Workbooks.Open(filePath)
+
+    '========================
+    '③ シート移動
+    '========================
+    Dim key As Variant
+    
+    For Each key In moveList.Keys
+        
+        On Error Resume Next
+        Set sh = wbSource.Sheets(key)
+        On Error GoTo 0
+        
+        If Not sh Is Nothing Then
+            
+            '同名シートチェック（必要なら）
+            If SheetExists(CStr(key), wbTarget) Then
+                MsgBox "既に存在: " & key
+            Else
+                sh.Move After:=wbTarget.Sheets(wbTarget.Sheets.Count)
+            End If
+            
+        Else
+            MsgBox "存在しないシート: " & key
+        End If
+        
+        Set sh = Nothing
+    Next
+
+    MsgBox "完了"
+
+End Sub
+
+
+' [DEF] シートの存在確認
+Function SheetExists(shtName As String, wb As Workbook) As Boolean
+    Dim ws As Worksheet
+    
+    On Error Resume Next
+    Set ws = wb.Sheets(shtName)
+    SheetExists = Not ws Is Nothing
+    On Error GoTo 0
+End Function
+
+
+' [DEF] [L[]] シートの存在を確認
+Function GetSheetName_JumpOrCreateSheetFromLink() As String
+    Dim startPos As Long
+    Dim endPos As Long
+    Dim sheetName As String
+    Dim strResult As String
+    Dim ws As Worksheet
+    
+    strResult = ""
+
+    Dim cellText As String
+    cellText = Trim(ActiveCell.Value)
+    
+    If Left(cellText, 2) <> "L[" Then
+        GetSheetName_JumpOrCreateSheetFromLink = ""
+        Application.StatusBar = "[L[]形式が必要です]"
+        Exit Function
+    End If
+
+    startPos = InStr(cellText, "[") + 1
+    endPos = InStr(cellText, "]")
+
+    If startPos <> 0 And endPos <> 0 Then
+        sheetName = Mid(cellText, startPos, endPos - startPos)
+        Names.Add name:="JumpOrCreateSheetFromLink_PrevSheet", _
+                  RefersTo:=ActiveSheet.name
+    Else
+        Application.StatusBar = "[L[]形式が必要です]"
+        strResult = ""
+    End If
+
+    Set ws = SelectOrCreateWs(sheetName, ActiveWorkbook.name)  ' 関数を使いまわした都合で
+    strResult = sheetName
+
+    GetSheetName_JumpOrCreateSheetFromLink = strResult
+End Function
+
+Sub RenameLinkSheet(ByVal strOldName As String, ByVal strNewName As String)
+    Dim strRenameSheetName As String
+    Dim ws As Worksheet
+    Dim foundCell As Range
+    Dim firstAddress As String
+    Dim keyword As String
+
+    strRenameSheetName = strOldName
+    keyword = "L[" & strRenameSheetName & "]"
+
+    Application.DisplayAlerts = False
+    ActiveWorkbook.Sheets(strRenameSheetName).name = strNewName
+    Application.DisplayAlerts = True
+    Application.StatusBar = strRenameSheetName & " => " & strNewName
+
+    For Each ws In ActiveWorkbook.Sheets
+        With ws.UsedRange
+            Set foundCell = .Find(What:=keyword, LookIn:=xlValues, LookAt:=xlPart)
+            If Not foundCell Is Nothing Then
+                Do
+                    If Trim(foundCell.Value) <> "" Then
+                        foundCell.Value = "L[" & strNewName & "]"
+                    End If
+                    Set foundCell = .FindNext(foundCell)
+                Loop While Not foundCell Is Nothing
+            End If
+        End With
+    Next ws
+
+End Sub
+
+Sub DeleteLinkSheet()
+    Dim strDeleteSheetName As String
+    Dim ws As Worksheet
+    Dim foundCell As Range
+    Dim firstAddress As String
+    Dim keyword As String
+
+    strDeleteSheetName = ActiveSheet.name
+    keyword = "L[" & strDeleteSheetName & "]"
+
+    Dim answer As String
+    answer = MsgBox("表示中のリンクシートを削除しますか？", vbYesNo + vbQuestion, "確認")
+
+    If answer = vbYes Then
+        Application.DisplayAlerts = False
+        ActiveWorkbook.Sheets(strDeleteSheetName).Delete
+        Application.DisplayAlerts = True
+        Application.StatusBar = strDeleteSheetName & " を削除しました"
+
+        For Each ws In ActiveWorkbook.Sheets
+            With ws.UsedRange
+                Set foundCell = .Find(What:=keyword, LookIn:=xlValues, LookAt:=xlPart)
+                If Not foundCell Is Nothing Then
+                    Do
+                        If Trim(foundCell.Value) <> "" Then
+                            foundCell.Value = ""
+                        End If
+                        Set foundCell = .FindNext(foundCell)
+                    Loop While Not foundCell Is Nothing
+                End If
+            End With
+        Next ws
+
+    Else
+        Application.StatusBar = "削除キャンセルしました"
+    End If
+
+End Sub
+
+Sub RenameSheetAndUpdateLinks()
+
+    Dim oldName As String
+    Dim newName As String
+    Dim ws As Worksheet
+    Dim foundCell As Range
+    Dim firstAddress As String
+    Dim oldKeyword As String
+    Dim newKeyword As String
+    Dim chk As Worksheet
+
+    oldName = ActiveSheet.name
+
+    newName = InputBox("新しいシート名を入力してください", "シート名変更", oldName)
+
+    If Trim(newName) = "" Then
+        MsgBox "処理を中止しました"
+        Exit Sub
+    End If
+
+    On Error Resume Next
+    Set chk = Worksheets(newName)
+    On Error GoTo 0
+
+    If Not chk Is Nothing Then
+        MsgBox "同じ名前のシートが既に存在します"
+        Exit Sub
+    End If
+
+    oldKeyword = "L[" & oldName & "]"
+    newKeyword = "L[" & newName & "]"
+
+    Application.ScreenUpdating = False
+
+    ActiveSheet.name = newName
+
+    For Each ws In ActiveWorkbook.Worksheets
+        With ws.UsedRange
+            Set foundCell = .Find(What:=oldKeyword, LookIn:=xlValues, LookAt:=xlPart)
+
+            If Not foundCell Is Nothing Then
+                firstAddress = foundCell.Address
+
+                Do
+                    foundCell.Value = Replace(foundCell.Value, oldKeyword, newKeyword)
+
+                    Set foundCell = .FindNext(foundCell)
+
+                    If foundCell Is Nothing Then Exit Do
+                Loop While foundCell.Address <> firstAddress
+            End If
+        End With
+    Next ws
+
+    Application.ScreenUpdating = True
+    Application.StatusBar = oldName & " → " & newName & " に変更し、リンクを更新しました"
+
+    MsgBox "完了しました"
+
+End Sub
+'==============================
+' Mod_WS_fncM.bas
+'==============================
+
+
+Function fCnvM(ByVal inptFncName As String, ByVal inptRange As Range, Optional ByVal inptSplitter As String = "")
+
+If inptSplitter = "" Then inptSplitter = gSplitter_MMC
+
+fCnvM = "M[" & inptFncName & "](" & WorksheetFunction.TextJoin(inptSplitter, True, inptRange) & ")"
+
+End Function
+
+
+'Sub RunMacroFromCell()
+'On Error Resume Next
+'
+'    Dim cell As Range
+'    Dim txt As String, funcName As String, argsStr As String
+'    Dim openBracket As Long, closeBracket As Long
+'    Dim openParen As Long, closeParen As Long
+'    Dim args As Variant
+'    Dim Result As Variant
+'
+'    For Each cell In Selection ' 対象セルを選択して実行
+'        txt = cell.Value
+'
+'        If Left(txt, 2) = "M[" And InStr(txt, "]") > 0 Then
+'            ' M[関数名](引数) の位置を特定
+'            openBracket = InStr(txt, "[")
+'            closeBracket = InStr(txt, "]")
+'            openParen = InStr(txt, "(")
+'            closeParen = (Len(txt) - openParen) - 1
+'
+'            If openBracket > 0 And closeBracket > openBracket And openParen > closeBracket And closeParen > openParen Then
+'                funcName = Mid(txt, openBracket + 1, closeBracket - openBracket - 1)
+'                funcName = Trim(funcName)
+'                argsStr = Mid(txt, openParen + 1, closeParen)
+'                args = Split(argsStr, ";")
+'
+'                On Error GoTo MacroNotFound
+'                ' 最大5引数対応（必要に応じて増減）
+'                Select Case UBound(args)
+'                    Case 0
+'                        Result = Application.Run(funcName, args(0))
+'                    Case 1
+'                        Result = Application.Run(funcName, args(0), args(1))
+'                    Case 2
+'                        Result = Application.Run(funcName, args(0), args(1), args(2))
+'                    Case 3
+'                        Result = Application.Run(funcName, args(0), args(1), args(2), args(3))
+'                    Case 4
+'                        Result = Application.Run(funcName, args(0), args(1), args(2), args(3), args(4))
+'                    Case Else
+'                        MsgBox "引数が多すぎます: " & txt
+'                        Exit Sub
+'                End Select
+'
+'            End If
+'        End If
+'    Next
+'
+'    Exit Sub
+'
+'MacroNotFound:
+'    If Err.Number <> 0 Then
+'        MsgBox "実行エラー: " & Err.Description & vbCrLf & funcName
+'        Err.Clear
+'    End If
+'    On Error GoTo 0
+'
+'End Sub
+
+
+
+
+
+Sub RunMacroFromCell()
+
+    Dim cell As Range
+    Dim txt As String
+    Dim funcName As String
+    Dim argsStr As String
+    Dim args() As String
+    Dim argList() As Variant
+    Dim i As Long
+    
+    Dim openBracket As Long, closeBracket As Long
+    Dim openParen As Long, closeParen As Long
+    
+    For Each cell In Selection
+        
+        If IsError(cell.Value) Then GoTo NextCell
+        
+        txt = Trim(cell.Value)
+        
+        If Left(txt, 2) <> "M[" Then GoTo NextCell
+        
+        ' --- 位置取得 ---
+        openBracket = InStr(txt, "[")
+        closeBracket = InStr(txt, "]")
+        openParen = InStr(txt, "(")
+        closeParen = InStrRev(txt, ")")
+        
+        ' --- 関数名 ---
+        funcName = Mid(txt, openBracket + 1, closeBracket - openBracket - 1)
+        funcName = Trim(funcName)
+        
+        ' --- 引数あり ---
+        If openParen > 0 And closeParen > openParen Then
+            
+            argsStr = Mid(txt, openParen + 1, closeParen - openParen - 1)
+            
+            If Trim(argsStr) <> "" Then
+                
+                ' splitterはここで統一（fCnvMと合わせる）
+                args = Split(argsStr, gSplitter_MMC)
+                
+                ReDim argList(LBound(args) To UBound(args))
+                
+                For i = LBound(args) To UBound(args)
+                    argList(i) = Trim(args(i))
+                Next i
+                
+                Call RunWithArgs(funcName, argList)
+                
+            Else
+                Application.Run funcName
+            End If
+            
+        Else
+            ' 引数なし
+            Application.Run funcName
+        End If
+        
+NextCell:
+    Next cell
+
+End Sub
+
+Sub RunWithArgs(funcName As String, argList() As Variant)
+
+    Select Case UBound(argList)
+        Case 0: Application.Run funcName, argList(0)
+        Case 1: Application.Run funcName, argList(0), argList(1)
+        Case 2: Application.Run funcName, argList(0), argList(1), argList(2)
+        Case 3: Application.Run funcName, argList(0), argList(1), argList(2), argList(3)
+        Case 4: Application.Run funcName, argList(0), argList(1), argList(2), argList(3), argList(4)
+        Case 5: Application.Run funcName, argList(0), argList(1), argList(2), argList(3), argList(4), argList(5)
+        Case Else
+            MsgBox "引数多すぎ: " & funcName
+    End Select
+
+End Sub
+'==============================
+' Mod_WS_fncN.bas
+'==============================
+
+
+Public Function fCnvN(ByVal inptShtName As String) As String
+    fCnvN = "N[" & inptShtName & "]"
+End Function
+
+Public Sub OutputTextRepoList(ByVal strRng As String)
+
+    Const BASE_DIR As String = FolderPath_N
+
+    Dim baseCell As Range
+    Set baseCell = Range(strRng)
+
+    If Dir(BASE_DIR, vbDirectory) = "" Then
+        MsgBox "フォルダが存在しません: " & BASE_DIR
+        Exit Sub
+    End If
+
+    Dim fname As String
+    Dim i As Long
+    i = 0
+
+    fname = Dir(BASE_DIR & "*.txt")
+
+    Do While fname <> ""
+        baseCell.Offset(i, 0).Value = fname
+        i = i + 1
+        fname = Dir()
+    Loop
+End Sub
+
+Function fGetNKey(src As String) As String
+    fGetNKey = fSplitBetween(src, "N[", "]")
+End Function
+
+Sub OpenOrCreateTxtByActiveCellNKey(inptRng As String)
+    OpenOrCreateTxtByNKey (ActiveSheet.Range(inptRng).Value)
+End Sub
+
+Sub OpenOrCreateTxtByNKey(ByVal src As String)
+
+    Const BASE_DIR As String = FolderPath_N
+    If Dir(BASE_DIR, vbDirectory) = "" Then
+        MsgBox "フォルダが存在しません: " & BASE_DIR
+        Exit Sub
+    End If
+
+    Dim nKey As String
+    nKey = fGetNKey(src)
+
+    If nKey = "" Then
+        MsgBox "N[] が見つかりません"
+        Exit Sub
+    End If
+
+    Dim filePath As String
+    filePath = BASE_DIR & nKey & ".txt"
+
+    ' なければ作成
+    If Dir(filePath) = "" Then
+        Dim f As Integer
+        f = FreeFile
+        Open filePath For Output As #f
+        Close #f
+    End If
+
+    ' 既定アプリで開く（メモ帳など）
+    Shell "notepad.exe """ & filePath & """", vbNormalFocus
+
+End Sub
+'==============================
+' Mod_WS_FontInterior.bas
+'==============================
+
+
+'' 下線
+Sub UnderlineBottomOfSelection()
+
+    Dim lastRow As Long
+    Dim rng As Range
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    ' 選択範囲の最下行番号
+    lastRow = Selection.Rows(Selection.Rows.Count).row
+
+    ' 選択範囲の列幅を維持したまま最下行を取得
+    Set rng = Intersect(Selection.Worksheet.Rows(lastRow), Selection)
+
+    rng.Borders(xlEdgeBottom).LineStyle = xlContinuous
+    rng.Borders(xlEdgeBottom).Weight = xlThin   ' 太さ調整（xlMedium / xlThick）
+
+End Sub
+
+'' ハイライト
+Sub HighlightFromClipboard_Red()
+
+    Dim clipText As String
+    Dim c As Range
+    Dim pos As Long
+
+    clipText = GetClipboardText()
+    If clipText = "" Then Exit Sub
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    Application.ScreenUpdating = False
+
+    For Each c In Selection.Cells
+        If Not IsError(c.Value) Then
+            pos = InStr(1, c.Value, clipText, vbBinaryCompare)
+            Do While pos > 0
+                With c.Characters(pos, Len(clipText)).Font
+                    .Color = vbRed
+                    .Bold = True
+                End With
+                pos = InStr(pos + Len(clipText), c.Value, clipText, vbBinaryCompare)
+            Loop
+        End If
+    Next c
+
+    Application.ScreenUpdating = True
+End Sub
+
+
+Sub SetRedBold()
+    With Selection.Font
+        .Color = vbRed
+        .Bold = True
+    End With
+End Sub
+
+Sub SetBlueBold()
+    With Selection.Font
+        .Color = RGB(0, 176, 240)
+        .Bold = True
+    End With
+End Sub
+
+Sub ResetFont()
+    With Selection.Font
+        .Color = vbBlack
+        .Bold = False
+    End With
+End Sub
+
+'==============================
+' Mod_WS_HyperLink.bas
+'==============================
+
+
+' 再リンク
+Public Sub LinkCellsToNameSheets()
+
+    Dim ws As Worksheet
+    Dim cell As Range
+    Dim txt As String
+    Dim sheetName As String
+    Dim targetWs As Worksheet
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    On Error GoTo CleanFail
+
+    For Each ws In ActiveWorkbook.Worksheets
+        For Each cell In ws.UsedRange.Cells
+
+            If Len(CStr(cell.Value)) > 0 Then
+                txt = CStr(cell.Value)
+
+                If Left(txt, 2) = "L[" And Right(txt, 1) = "]" Then
+                    sheetName = Mid(txt, 3, Len(txt) - 3)
+
+                    Set targetWs = Nothing
+                    On Error Resume Next
+                    Set targetWs = ActiveWorkbook.Worksheets(sheetName)
+                    On Error GoTo 0
+
+                    If Not targetWs Is Nothing Then
+
+                        If cell.Hyperlinks.Count > 0 Then
+                            cell.Hyperlinks.Delete
+                        End If
+
+                        cell.Value = cell.Value
+                        cell.Font.ColorIndex = xlAutomatic
+                        cell.Font.Underline = xlUnderlineStyleNone
+
+                        ws.Hyperlinks.Add _
+                            anchor:=cell, _
+                            Address:="", _
+                            SubAddress:="'" & targetWs.name & "'!A1", _
+                            TextToDisplay:=txt
+
+                    Else
+                        Debug.Print "未リンク：シート [" & sheetName & "] が存在しません"
+                    End If
+
+                End If
+            End If
+
+        Next cell
+    Next ws
+
+    MsgBox "リンクの再作成完了"
+    GoTo CleanExit
+
+CleanFail:
+    MsgBox "処理中にエラーが発生しました：" & Err.Description, vbExclamation
+
+CleanExit:
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+End Sub
+
+'==============================
+' Mod_WS_Key2Val.bas
+'==============================
+
+
+'==============================
+' ラッパー
+'==============================
+
+Function fKey2Val( _
+    sKey As String, _
+    sWs As String, _
+    Optional sKeyCol As String = "[KEY]", _
+    Optional sRtnCol As String = "[VAL]", _
+    Optional inptErr As String = "#VALUE!", _
+    Optional inptBook As String = "" _
+) As String
+
+    fKey2Val = GetValueByKey(sKey, sWs, sKeyCol, sRtnCol, inptErr, inptBook)
+
+End Function
+
+
+Function fKey2Val_as( _
+    sKey As String, _
+    Optional sKeyCol As String = "[KEY]", _
+    Optional sRtnCol As String = "[VAL]", _
+    Optional inptErr As String = "#VALUE!" _
+) As String
+
+    fKey2Val_as = GetValueByKey( _
+        sKey, ActiveSheet.name, _
+        sKeyCol, sRtnCol, inptErr, _
+        ActiveWorkbook.name)
+
+End Function
+
+
+'==============================
+' メイン検索関数
+'==============================
+
+Function GetValueByKey( _
+    sKey As String, _
+    sWs As String, _
+    Optional sKeyCol As String = "[KEY]", _
+    Optional sRtnCol As String = "[VAL]", _
+    Optional inptErr As String = "#VALUE!", _
+    Optional inptBook As String = "" _
+) As String
+
+    Dim WBNAME As String
+    WBNAME = IIf(inptBook = "", ActiveWorkbook.name, inptBook)
+
+    ' 列名 → 列番号変換
+    sKeyCol = ResolveColumn(sKeyCol, sWs, WBNAME)
+    sRtnCol = ResolveColumn(sRtnCol, sWs, WBNAME)
+
+    If sKeyCol = "" Or sRtnCol = "" Then
+        GetValueByKey = inptErr
+        Exit Function
+    End If
+    
+    GetValueByKey = fGetCellData( _
+        WBNAME, sWs, sKey, _
+        CLng(sKeyCol), CLng(sRtnCol), _
+        inptErr)
+
+End Function
+
+
+'==============================
+' 列解決（重複除去ポイント）
+'==============================
+
+ Function ResolveColumn( _
+    colSpec As String, _
+    wsName As String, _
+    WBNAME As String _
+) As String
+
+    If Left(colSpec, 1) = "[" Then
+        ResolveColumn = fSearchField( _
+            Mid(colSpec, 2, Len(colSpec) - 2), _
+            wsName, WBNAME)
+    Else
+        ResolveColumn = Columns(colSpec).Column
+    End If
+
+End Function
+
+
+'==============================
+' 実データ取得
+'==============================
+ 
+ Function fGetCellData( _
+    WBNAME As String, _
+    wsName As String, _
+    inptKey As String, _
+    inptKeyCol As Long, _
+    inptTargetCol As Long, _
+    Optional inptErrMsg As String = "#VALUE!" _
+) As String
+
+    Dim rColKey As Range
+    Dim sMatchRow As Variant
+
+    On Error Resume Next
+
+    With Workbooks(WBNAME).Worksheets(wsName)
+
+        Set rColKey = .Columns(inptKeyCol)
+        If rColKey Is Nothing Then
+            fGetCellData = inptErrMsg
+            Exit Function
+        End If
+
+        sMatchRow = Application.match(inptKey, rColKey, 0)
+
+        If Not IsError(sMatchRow) Then
+            fGetCellData = .Cells(CLng(sMatchRow), inptTargetCol).Value
+        Else
+            fGetCellData = inptErrMsg
+        End If
+
+    End With
+
+End Function
+
+
+'==============================
+' フィールド検索
+'==============================
+
+Function fSearchField( _
+    inptKey As String, _
+    inptSht As String, _
+    Optional inptWb As String = "" _
+) As Long
+
+    Dim WBNAME As String
+    WBNAME = IIf(inptWb = "", ActiveWorkbook.name, inptWb)
+
+    fSearchField = fPg_searchCol(inptKey, inptSht, WBNAME)
+
+End Function
+
+
+Function fPg_searchCol( _
+    inptKey As String, _
+    inptSht As String, _
+    Optional inptBook As String = "" _
+) As Long
+
+    Dim WBNAME As String
+    WBNAME = IIf(inptBook = "", ActiveWorkbook.name, inptBook)
+
+    Dim rRow As Range
+    Dim sMatchCol As Variant
+
+    On Error Resume Next
+
+    With Workbooks(WBNAME).Worksheets(inptSht)
+
+        Set rRow = .Rows(1)
+        If rRow Is Nothing Then Exit Function
+
+        sMatchCol = Application.match(inptKey, rRow, 0)
+
+        If Not IsError(sMatchCol) Then
+            fPg_searchCol = CLng(sMatchCol)
+        Else
+            fPg_searchCol = 0
+        End If
+
+    End With
+
+End Function
+
+'==============================
+' Mod_WS_move_row.bas
+'==============================
+
+
+' [DEF] 一行を上に移動する
+Sub MoveRowUp()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+    If Selection.Cells.Count <> 1 Then Exit Sub
+
+    Dim ws As Worksheet
+    Dim r As Long, c As Long
+
+    Set ws = Selection.Worksheet
+    r = Selection.row
+    c = Selection.Column
+
+    If r <= 1 Then Exit Sub
+
+    ws.Rows(r).Cut
+    ws.Rows(r - 1).Insert Shift:=xlDown
+    ws.Cells(r - 1, c).Select
+
+    Application.CutCopyMode = False
+
+End Sub
+
+' [DEF] 一行を下に移動する
+Sub MoveRowDown()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+    If Selection.Cells.Count <> 1 Then Exit Sub
+
+    Dim ws As Worksheet
+    Dim r As Long, c As Long
+
+    Set ws = Selection.Worksheet
+    r = Selection.row
+    c = Selection.Column
+
+    ws.Rows(r).Cut
+    ws.Rows(r + 2).Insert Shift:=xlDown
+    ws.Cells(r + 1, c).Select
+
+    Application.CutCopyMode = False
+
+End Sub
+
+' 実装が難しそうなので保留
+'' [DEF] セクションを下に移動する
+'Sub MoveBlockDown()
+'
+'    If TypeName(Selection) <> "Range" Then Exit Sub
+'
+'    Dim ws As Worksheet
+'    Set ws = Selection.Worksheet
+'
+'    Dim startRow As Long
+'    startRow = Selection.row
+'
+'    Dim baseCol As Long
+'    baseCol = Selection.Column
+'
+'    Dim endRow As Long
+'    endRow = startRow
+'
+'    Dim i As Long
+'
+'    ' --- 子を含めた範囲取得 ---
+'    For i = startRow + 1 To ws.Rows.Count
+'
+'        If ws.Cells(i, baseCol).Value <> "" Then Exit For
+'
+'        ' 左側に値があれば「親階層」なので終了
+'        Dim j As Long
+'        For j = 1 To baseCol - 1
+'            If ws.Cells(i, j).Value <> "" Then Exit For
+'        Next j
+'
+'        If j < baseCol Then Exit For
+'
+'        endRow = i
+'
+'    Next i
+'
+'    ' --- 移動 ---
+'    Rows(startRow & ":" & endRow).Cut
+'    Rows(endRow + 2).Insert Shift:=xlDown
+'
+'End Sub
+'
+'' [DEF] セクションを上に移動する
+'Sub MoveBlockUp()
+'
+'    If TypeName(Selection) <> "Range" Then Exit Sub
+'
+'    Dim ws As Worksheet
+'    Set ws = Selection.Worksheet
+'
+'    Dim startRow As Long
+'    startRow = Selection.row
+'
+'    Dim baseCol As Long
+'    baseCol = Selection.Column
+'
+'    Dim endRow As Long
+'    endRow = startRow
+'
+'    Dim i As Long
+'
+'    ' --- 子を含めた範囲取得 ---
+'    For i = startRow + 1 To ws.Rows.Count
+'
+'        If ws.Cells(i, baseCol).Value <> "" Then Exit For
+'
+'        Dim j As Long
+'        For j = 1 To baseCol - 1
+'            If ws.Cells(i, j).Value <> "" Then Exit For
+'        Next j
+'
+'        If j < baseCol Then Exit For
+'
+'        endRow = i
+'
+'    Next i
+'
+'    If startRow = 1 Then Exit Sub
+'
+'    ' --- 移動 ---
+'    Rows(startRow & ":" & endRow).Cut
+'    Rows(startRow - 1).Insert Shift:=xlDown
+'
+'End Sub
+'==============================
+' Mod_WS_SearchRow.bas
+'==============================
+'もし育てるなら次は:
+'
+'ヘッダー名キャッシュ (高速化)
+'
+'Dictionary化 (複数検索高速化)
+'
+'エラー管理統一
+'
+'クラス化 (KeyIndexオブジェクト化)
+'
+
+
+
+'==============================
+' 指定列でキー一致行を返す
+'==============================
+Function fPg_searchRow( _
+    inptKey As String, _
+    inptBook As String, _
+    inptSht As String, _
+    Optional inptCol As Long = 1 _
+) As Long
+
+    Dim rCol As Range
+    Dim vMatch As Variant
+
+    On Error Resume Next
+
+    With Workbooks(inptBook).Worksheets(inptSht)
+
+        Set rCol = .Columns(inptCol)
+        If rCol Is Nothing Then Exit Function
+
+        vMatch = Application.match(inptKey, rCol, 0)
+
+        If Not IsError(vMatch) Then
+            fPg_searchRow = CLng(vMatch)
+        Else
+            fPg_searchRow = 0
+        End If
+
+    End With
+
+End Function
+
+'==============================
+' Mod_WS_Snipet.bas
+'==============================
+
+' シート名からA1セルの値を取得
+Public Function getA1(ByVal inptShtName As String) As String
+    Dim sResult As String
+    Dim sSheetName As String
+    sSheetName = fSplitBetween(inptShtName, "L[", "]")
+    If sSheetName = "" Then sSheetName = inptShtName
+    
+    If sSheetName = "" Then
+        sResult = "-"
+    ElseIf IsExistWs(sSheetName) = False Then
+        sResult = "[シート未作成]"
+    Else
+        sResult = ActiveWorkbook.Sheets(sSheetName).Range("A1").Value
+        If sResult = "" Then sResult = "-"
+    End If
+    getA1 = sResult
+End Function
+
+
+'==============================
+' Mod_WS_Sql.bas
+'==============================
+
+
+Sub GetQueryResults_local( _
+    SqlQuery As String, _
+    WorkBookName As String, _
+    WorkSheetName As String)
+
+    Dim DataFilePath As String
+    Dim cn As ADODB.Connection
+    Dim rs As ADODB.Recordset
+    Dim ws As Worksheet
+    Dim RowCount As Long
+    Dim ColCount As Long
+    Dim i As Long
+
+    If SqlQuery = "" Then
+        Debug.Print "SQL_ERR: Query string missing"
+        Exit Sub
+    End If
+
+    DataFilePath = WorkBookName
+
+    If Dir(DataFilePath) = "" Then
+        Debug.Print "SQL_ERR: File not found - " & DataFilePath
+        Exit Sub
+    End If
+
+    Set cn = New ADODB.Connection
+
+    cn.ConnectionString = _
+        "Provider=Microsoft.ACE.OLEDB.12.0;" & _
+        "Data Source=" & DataFilePath & ";" & _
+        "Extended Properties=""Excel 12.0 Xml;HDR=YES"";"
+
+    On Error GoTo EndPoint
+    cn.Open
+
+    On Error GoTo CloseConnection
+
+    Set rs = New ADODB.Recordset
+    rs.ActiveConnection = cn
+    rs.CursorType = adOpenStatic
+    rs.Source = SqlQuery
+    rs.Open
+
+    On Error GoTo CloseRecordset
+
+    RowCount = rs.RecordCount
+    If RowCount = 0 Then
+        Debug.Print "SQL_ERR: No results"
+        GoTo SafeExit
+    End If
+
+    ColCount = rs.Fields.Count
+
+    Set ws = Workbooks(Dir(WorkBookName)).Worksheets(WorkSheetName)
+    ws.Cells.Clear
+
+    ' ヘッダー出力
+    For i = 0 To ColCount - 1
+        ws.Cells(1, i + 1).Value = rs.Fields(i).name
+    Next i
+
+    ' データ出力
+    ws.Cells(2, 1).CopyFromRecordset rs
+    ws.Columns.AutoFit
+
+SafeExit:
+    rs.Close
+    cn.Close
+    Set rs = Nothing
+    Set cn = Nothing
+    Exit Sub
+
+'---------------------------
+' ERROR HANDLERS
+'---------------------------
+
+CloseRecordset:
+    rs.Close
+    cn.Close
+    Debug.Print "SQL_ERR after recordset open"
+    Debug.Print Err.Number, Err.Description
+    Exit Sub
+
+CloseConnection:
+    cn.Close
+    Debug.Print "SQL_ERR after connection open"
+    Debug.Print Err.Number, Err.Description
+    Exit Sub
+
+EndPoint:
+    Debug.Print "SQL_ERR: Connection failed"
+    Debug.Print Err.Number, Err.Description
+
+End Sub
+
+
+' ※ FORMを使用している
+'Sub fill_sql()
+'
+'    Dim sWb As String
+'    Dim sWsDst As String
+'    Dim sWsFrm As String
+'    Dim sSelectCol As String
+'    Dim sFrom As String
+'    Dim sWhere As String
+'    Dim sQuery As String
+'    Dim v As Variant
+'
+'    sWb = Workbooks(p_wbName_main()).Path & "\" & _
+'          Workbooks(p_wbName_main()).name
+'
+'    sWsDst = ActiveSheet.name
+'    sWsFrm = "BASE_CODE"
+'
+'    sSelectCol = "SELECT [" & _
+'        WorksheetFunction.TextJoin("],[", True, ActiveSheet.Rows(1).Value) & "]"
+'
+'    ' ヘッダー存在チェック
+'    For Each v In Split(WorksheetFunction.TextJoin(",", True, _
+'                         ActiveSheet.Rows(1).Value), ",")
+'        If fSearchField(CStr(v), sWsFrm) = 0 Then
+'            Stop ' NOT FOUND
+'        End If
+'    Next v
+'
+'    sFrom = " FROM [" & sWsFrm & "$]"
+'
+'    sWhere = " WHERE " & FORM_MAIN.tbx_query.Text
+'
+'    If FORM_MAIN.cbx_clear.Value = True Then
+'        sSelectCol = "SELECT *"
+'        sWhere = ""
+'    End If
+'
+'    sQuery = sSelectCol & sFrom & sWhere
+'
+'    Application.ScreenUpdating = False
+'    Call GetQueryResults_local(sQuery, sWb, sWsDst)
+'    Application.ScreenUpdating = True
+'
+'End Sub
+
+
+
+
+'==============================
+' Mod_WS_String.bas
+'==============================
+
+
+
+' [DEF] 配列を文字結合
+Function fTextJoin(inptDelimiter As String, inptArray As Variant) As String
+    ' fTextJoin(", ", Array("a", "b", "c"))
+    ' a, b, c
+    fTextJoin = WorksheetFunction.TextJoin(inptDelimiter, True, inptArray)
+End Function
+
+Function fSplitBetween(ByVal src As String, _
+                        ByVal startStr As String, _
+                        ByVal endStr As String) As String
+    Dim p1 As Long, p2 As Long
+
+    p1 = InStr(src, startStr)
+    If p1 = 0 Then Exit Function
+
+    p1 = p1 + Len(startStr)
+    p2 = InStr(p1, src, endStr)
+    If p2 = 0 Then Exit Function
+
+    fSplitBetween = Mid(src, p1, p2 - p1)
+End Function
+
+Public Function fsplit(ByVal txt As String, ByVal idx As Long, Optional ByVal splitter As String = ",") As String
+    
+    If txt = "" Then
+        fsplit = ""
+        Exit Function
+    End If
+    
+    Dim arr As Variant
+    
+    ' 分割
+    arr = Split(txt, splitter)
+    
+    ' 範囲チェック（0始まり）
+    If idx < LBound(arr) Or idx > UBound(arr) Then
+        fsplit = ""
+        Exit Function
+    End If
+    
+    ' 取得
+    fsplit = arr(idx - 1)
+
+End Function
+
+
+Public Function fsplit_B(ByVal txt As String, ByVal idx As Long, Optional ByVal splitter As String = ",") As String
+    
+    If txt = "" Then
+        fsplit_B = ""
+        Exit Function
+    End If
+    
+    Dim arr As Variant
+    
+    ' 分割
+    arr = Split(txt, splitter)
+    
+    ' 範囲チェック（0始まり）
+    If idx < LBound(arr) Or idx - 1 > UBound(arr) Then
+        fsplit_B = "インデックスが有効範囲にありません"
+        Exit Function
+    End If
+    
+    ' 取得
+    fsplit_B = arr(UBound(arr) - idx + 1)
+
+End Function
+'==============================
+' Mod_WS_Window.bas
+'==============================
+
+
+Public Sub OpenNewWindow()
+    ActiveWorkbook.NewWindow
+End Sub
+
+' [DEF] 指定シートを新しいウィンドウで表示
+Sub openNew_TargetSheet_Awb(strSht As String)
+    Dim sDstWs As String
+    sDstWs = strSht
+
+    With ActiveWindow.NewWindow
+        With ActiveWorkbook.Sheets(sDstWs)
+            .Select
+        End With
+    End With
+
+End Sub
+
+Sub JumpFromPrevSheet()
+    Dim prevSheet As String
+    On Error Resume Next
+    prevSheet = Evaluate("JumpOrCreateSheetFromLink_PrevSheet")
+    If IsExistWs(prevSheet) Then
+        Sheets(prevSheet).Activate
+    End If
+End Sub
+
+' [DEF] ワークシートを選択、存在しなければ新規作成してジャンプ
+Function SelectOrCreateWs(inptShtName As String, Optional inptWb As String = "") As Worksheet
+    Dim sSht As String: sSht = inptShtName
+    Dim sWb As Workbook
+    If inptWb = "" Then
+        Set sWb = Workbooks(p_wbName_main())
+    Else
+        Set sWb = Workbooks(inptWb)
+    End If
+
+    Dim s As Worksheet
+    Dim sht As Worksheet
+
+    If sSht = "" Then
+        Application.StatusBar = "シート名が空です"
+        Exit Function
+    End If
+
+    For Each s In sWb.Sheets
+        If s.name = sSht Then
+            Set SelectOrCreateWs = sWb.Sheets(sSht)
+            Exit Function
+        End If
+    Next s
+    
+    Dim shtNew As Worksheet
+    Set shtNew = sWb.Worksheets.Add(After:=sWb.Worksheets(sWb.Worksheets.Count))
+    shtNew.name = sSht
+    Set sht = sWb.Sheets(sSht)
+
+    Set SelectOrCreateWs = sht
+
+End Function
+
+' [DEF] ワークシートが存在するか調べる
+Function IsExistWs(inptShtName As String, Optional inptWb As String = "") As Boolean
+    Dim sSht As String: sSht = inptShtName
+    Dim sWb As Workbook
+    If inptWb = "" Then
+        Set sWb = Workbooks(p_wbName_main())
+    Else
+        Set sWb = Workbooks(inptWb)
+    End If
+
+    Dim s As Worksheet
+    Dim v As Variant
+    Dim sResult As Boolean
+
+    sResult = False
+
+    For Each v In Split(inptShtName, ",")
+        For Each s In sWb.Sheets
+            If s.name = CStr(v) Then
+                sResult = True
+            End If
+        Next s
+    Next v
+
+    IsExistWs = sResult
+    
+    
+End Function
+
+'==============================
+' UI_Window.bas
+'==============================
+
+
+' UI MODE ===================================================================
+
+' [DEF] UIモードをトグル切り替え
+Sub ToggleUIMode()
+
+    If gIsUIMode = False Then
+        Call UImodeON
+        gIsUIMode = True
+    Else
+        Call UImodeOFF
+        gIsUIMode = False
+    End If
+
+End Sub
+
+' [DEF] UIモードをON
+Sub UImodeON()
+
+
+    ' リボンだけ消す
+    Application.ExecuteExcel4Macro "SHOW.TOOLBAR(""Ribbon"",False)"
+
+    ' 数式バーは残す
+    Application.DisplayFormulaBar = True
+
+    With ActiveWindow
+        .DisplayHeadings = False
+        .DisplayWorkbookTabs = False
+        .DisplayHorizontalScrollBar = False
+        .DisplayVerticalScrollBar = False
+    End With
+
+
+
+'    Application.DisplayFormulaBar = False
+'    Application.ExecuteExcel4Macro "SHOW.TOOLBAR(""Ribbon"",False)"
+'
+'    With ActiveWindow
+'        .DisplayHeadings = False
+'        .DisplayWorkbookTabs = False
+'        .DisplayHorizontalScrollBar = False
+'        .DisplayVerticalScrollBar = False
+'    End With
+
+End Sub
+
+' [DEF] UIモードをOFF
+Sub UImodeOFF()
+
+    Application.DisplayFormulaBar = True
+    Application.ExecuteExcel4Macro "SHOW.TOOLBAR(""Ribbon"",True)"
+
+    With ActiveWindow
+        .DisplayHeadings = True
+        .DisplayWorkbookTabs = True
+        .DisplayHorizontalScrollBar = True
+        .DisplayVerticalScrollBar = True
+    End With
+
+End Sub
+
+
+'==============================
+' Z_CommentOut.bas
+'==============================
+' EDIT MAIN
+'Function FillFormula_nest()
+'
+'    Dim IPos As Long
+'    Dim i As Long
+'
+'    With ActiveSheet
+'
+'        IPos = .Cells(1, Columns.Count).End(xlToLeft).Column + 1
+'        .Cells(1, IPos).Value = "F[CNT_EXESYO]"
+'
+'        For i = 2 To .Cells(Rows.Count, 1).End(xlUp).row
+'            If .Cells(i, fSearchField("FNC(CALL)", ActiveSheet.name)).Value <> "" Then
+'                .Cells(i, IPos).Value = _
+'                    fJoinRngValue( _
+'                        .Cells(i, fSearchField("FNC(CALL)", ActiveSheet.name)).Value, _
+'                        "FILL(FNCN)", _
+'                        "LBL(EXE_SYO)")
+'            End If
+'        Next i
+'
+'        IPos = .Cells(1, Columns.Count).End(xlToLeft).Column + 1
+'        .Cells(1, IPos).Value = "F[CNT_CALL]"
+'
+'        For i = 2 To .Cells(Rows.Count, 1).End(xlUp).row
+'            If .Cells(i, fSearchField("FNC(CALL)", ActiveSheet.name)).Value <> "" Then
+'                .Cells(i, IPos).Value = _
+'                    fJoinRngValue( _
+'                        .Cells(i, fSearchField("FNC(CALL)", ActiveSheet.name)), _
+'                        "FILL(FNCN)", _
+'                        "FNC(CALL)")
+'            End If
+'        Next i
+'
+'        IPos = .Cells(1, Columns.Count).End(xlToLeft).Column + 1
+'        .Cells(1, IPos).Value = "F[FILE_CALL]"
+'
+'        For i = 2 To .Cells(Rows.Count, 1).End(xlUp).row
+'            If .Cells(i, fSearchField("FNC(CALL)", ActiveSheet.name)).Value <> "" Then
+'                .Cells(i, IPos).Value = _
+'                    fKey2Val( _
+'                        .Cells(i, fSearchField("FNC(CALL)", ActiveSheet.name)), _
+'                        "BASE_CODE", _
+'                        "[LBL(FNCN)]", _
+'                        "[FILE]")
+'            End If
+'        Next i
+'
+'    End With
+'
+'End Function
+'
+'Sub Fil_IfColumn()
+'
+'    Dim IPos As Long
+'    Dim i As Long
+'    Dim sWs As String: sWs = "BASE_CODE"
+'    Dim sPtn As String
+'
+'    sPtn = "DoEvents|Wend|THEN|END IF|IF(\s+|$)|ELSE|Do(\s+|$)|While(\s+|$)|For(\s+|$)|CASE|End Select|Loop|Next"
+'
+'    With Workbooks(p_wbName_main()).Sheets(sWs)
+'
+'        IPos = fSearchField("FNC(IF)", sWs)
+'        If IPos = 0 Then
+'            MsgBox "[FNC(IF)]列が必要です"
+'            Exit Sub
+'        End If
+'
+'        For i = 2 To .Cells(Rows.Count, fSearchField("FILE", sWs)).End(xlUp).row
+'
+'            If .Cells(i, fSearchField("CODE", sWs)).Value <> "" Then
+'                .Cells(i, IPos).Value = _
+'                    IIf( _
+'                        fRegTest( _
+'                            .Cells(i, fSearchField("CODE", sWs)).Value, _
+'                            sPtn), _
+'                        "*", "")
+'            End If
+'
+'        Next i
+'
+'    End With
+'
+'End Sub
+'
+'
+'
+'Sub Expand_Src_EDT()
+'
+'    Dim sWs As String: sWs = "BASE_CODE"
+'    Dim i As Long
+'    Dim IColSrc As Long
+'    Dim IColFILE As Long
+'    Dim IColCode As Long
+'
+'    Application.ScreenUpdating = False
+'
+'    With Workbooks(p_wbName_main()).Sheets(sWs)
+'
+'        .Activate
+'        .Select
+'
+'        IColSrc = fSearchField("SRC", .name)
+'        IColFILE = fSearchField("FILE", .name)
+'        IColCode = fSearchField("CODE", .name)
+'
+'        If IColSrc = 0 Or _
+'           IColFILE = 0 Or _
+'           IColCode = 0 Then
+'            ' 以下不明（画像外）
+'        End If
+'
+'    End With
+'
+'End Sub
+'
+
+'
+'' [SECTION] 共通関数、ラッパー  ================================
+'
+'' [DEF] 設定中のワークブックのフルパスを取得
+'Function GetTargetWb_FullPath() As String
+'    GetTargetWb_FullPath = Workbooks(p_wbName_main()).Path & "\" & Workbooks(p_wbName_main()).Name
+'End Function
+'
+'' [DEF] 設定中のワークブック名を取得
+'Function GetTargetWb_Name() As String
+'    GetTargetWb_Name = GetCrrBookName
+'    ' #TODO: 確認付廃止
+'    ' Workbooks(p_wbName_main()).Name
+'End Function
+'
+'
+'
+''[MOD] EDTMAIN
+'
+'' [DEF] [BASE_CODE]を新しいウィンドウで表示
+'Sub openNew_edtMain()
+'
+'    Dim sKey As String: sKey = ActiveCell.Value
+'    Dim i As Long
+'    Dim ii As Long
+'    Dim sDstWs As String: sDstWs = "BASE_CODE"
+'    Dim sMatchRow As String
+'    Dim sRslt As String
+'    Dim rRow As Range
+'    Dim lFile_Col As Long: lFile_Col = fSearchField("FILE", "BASE_CODE", p_wbName_main())
+'    Dim lCode_Col As Long: lCode_Col = fSearchField("CODE", "BASE_CODE")
+'    Dim rSel As Range: Set rSel = Selection
+'
+'    With Workbooks(p_wbName_main()).Sheets(sDstWs)
+'
+'        Set rRow = .Columns(.Columns(lFile_Col).Column)
+'
+'        ' NOT MATCH
+'        If rRow Is Nothing Then Exit Sub
+'
+'        ' SEARCH
+'        sMatchRow = Application.WorksheetFunction.Match(sKey, rRow, 0)
+'        If sMatchRow = "" Then sMatchRow = Application.WorksheetFunction.Match(CLng(sKey), rRow, 0)
+'
+'        If sMatchRow <> "" Then
+'
+'            With ActiveWindow.NewWindow
+'                With Workbooks(p_wbName_main()).Sheets(sDstWs)
+'                    .Select
+'                    .Cells(CLng(sMatchRow), lCode_Col).Select
+'                End With
+'            End With
+'
+'        End If
+'
+'    End With
+'
+'End Sub
+'
+'' [DEF] [BASE_CODE]シートの特定セルに移動？
+'Sub Activate_edtMain()
+'
+'    Dim sKey As String
+'    Dim i As Long
+'    Dim ii As Long
+'    Dim sDstWs As String: sDstWs = "BASE_CODE"
+'    Dim sMatchRow As String
+'    Dim sRslt As String
+'    Dim rRow As Range
+'    Dim lFile_Col As Long: lFile_Col = fSearchField("FILE", "BASE_CODE")
+'    Dim lCode_Col As Long: lCode_Col = fSearchField("CODE", "BASE_CODE")
+'    Dim rSel As Range: Set rSel = Selection
+'
+'    ' sKey = ActiveSheet.Cells(ActiveCell.Row, fSearchField("FILE", ActiveSheet.Name)).Value
+'    sKey = ActiveCell.Value
+'
+'    With Workbooks(p_wbName_main()).Sheets(sDstWs)
+'
+'        Set rRow = .Columns(.Columns(lFile_Col).Column)
+'
+'        ' NOT MATCH
+'        If rRow Is Nothing Then Exit Sub
+'
+'        ' SEARCH
+'        sMatchRow = Application.WorksheetFunction.Match(sKey, rRow, 0)
+'        If sMatchRow = "" Then sMatchRow = Application.WorksheetFunction.Match(CLng(sKey), rRow, 0)
+'
+'        If sMatchRow <> "" Then
+'
+'            With Workbooks(p_wbName_main()).Sheets(sDstWs)
+'                .Select
+'                .Cells(CLng(sMatchRow), lCode_Col).Select
+'            End With
+'
+'        End If
+'
+'    End With
+'
+'End Sub
+'
+'' [DEF] SJIS or UTF-8 をトリムする
+'Function fSplit_SJISorUTF(inptStr As String, inptNum As Long, _
+'    Optional inptBool As Boolean = True, _
+'    Optional inptCmt As Boolean = False) As String
+'
+'    Dim sResult As String
+'
+'    sResult = inptStr
+'    sResult = fSplit(sResult, inptNum, "[SJIS]:")
+'    sResult = fSplit(sResult, inptNum, "[UTF-8]:")
+'    sResult = fSplit(sResult, 2, "src")
+'    ' sResult = Replace(sResult, sPath, "")
+'
+'    If inptNum = 1 Then
+'
+'        If inptBool = True Then sResult = fSplit(sResult, 1, """") & """)"""
+'        sResult = Trim(sResult)
+'
+'    ElseIf inptNum = 2 Then
+'
+'        If Left(Trim(sResult), 1) <> "'" Then
+'            sResult = sResult
+'        Else
+'            If inptCmt = False Then
+'                sResult = ""
+'            Else
+'                sResult = sResult
+'            End If
+'        End If
+'
+'    End If
+'
+'    If fRegTest(sResult, "Password") Then
+'        sResult = fReplaceReg(sResult, "Password=[\#\w]+", "Password=*****")
+'    End If
+'
+'    fSplit_SJISorUTF = sResult
+'
+'End Function
+'
+'
+'' [DEF] 関数名を抽出
+'Function fSplit_FncName(inptFncName As String, Optional inptErr As Boolean = False) As String
+'
+'    Dim s As String: s = inptFncName
+'    Dim sRslt As String
+'    Dim arr As Variant
+'
+'    If fSplit(s, 1, "(") = s Or _
+'       fRegTest(s, "function |Sub |Property ") = False Then
+'
+'        sRslt = ""
+'
+'        If inptErr = True Then sRslt = "Attribute " & fSplit(s, 2, """", True)
+'
+'    Else
+'
+'        arr = Split(fSplit(s, 1, "("), " ")
+'        sRslt = CStr(arr(UBound(arr)))
+'
+'    End If
+'
+'    fSplit_FncName = sRslt
+'
+'End Function
+'
+'
+'
+'
+''[MOD] ?
+'
+'Sub ProcessAllFilesInDirectory(inptPath As String)
+'
+'    Dim folderpath As String
+'    Dim fileName As String
+'    Dim subFolder As Object
+'    Dim file As Object
+'
+'    ' Specify the directory path
+'    ' folderPath = "C:\Users\...\#work#utf8"
+'
+'    folderpath = inptPath
+'    folderpath = folderpath & "\"
+'
+'    ' Loop through all files in the specified directory (including subfolders)
+'    For Each subFolder In CreateObject("Scripting.FileSystemObject").GetFolder(folderpath).SubFolders
+'
+'        ProcessAllFilesInDirectory subFolder.Path
+'
+'        For Each file In subFolder.Files
+'            ANSItoUTF8 file.Path
+'            UTF8toANSI file.Path
+'        Next file
+'
+'    Next subFolder
+'
+'End Sub
+'
+'' ANSI → UTF-8
+'Sub ANSItoUTF8(inptPath As String)
+'
+'    Dim a As Variant
+'    Dim i As Variant
+'    Dim buf As Variant
+'    Dim byteTmp As Variant
+'
+'    ' 変換したいテキストファイルのファイルパスを作成
+'    Dim FilePath
+'    FilePath = inptPath
+'
+'    ' Shift-JIS形式のテキストファイルを取得
+'    a = ""
+'    i = 0
+'    Open FilePath For Input As #1
+'        Do Until EOF(1)
+'            Line Input #1, buf
+'            a = a & buf & vbLf
+'        Loop
+'    Close #1
+'
+'    ' Shift-JIS形式のファイル以外を取得した場合は終了
+'    For i = 1 To Len(a)
+'        If Asc(Mid(a, i, 1)) = -7295 Then Exit Sub
+'    Next
+'
+'    ' BOMを削除する
+'    With CreateObject("ADODB.Stream")
+'        .Charset = "UTF-8"
+'        .Open
+'        .WriteText a
+'        .Position = 0
+'        .Type = 1
+'        .Position = 3
+'        byteTmp = .Read
+'        .Close
+'    End With
+'
+'    ' UTF-8でテキストファイルへ出力する
+'    With CreateObject("ADODB.Stream")
+'        .Charset = "UTF-8"
+'        .LineSeparator = 10
+'        .Type = 1
+'        .Open
+'        .Write byteTmp
+'        .SetEOS
+'        .SaveToFile FilePath, 2
+'        .Close
+'    End With
+'
+'End Sub
+'
+'
+'' 取りあえず持ってきた
+'
+'Sub HiLightClear()
+'
+'    With Selection.Font
+'        .Bold = False
+'        .ColorIndex = xlAutomatic
+'        .TintAndShade = 0
+'    End With
+'
+'End Sub
+'
+'Sub HiLightRed()
+'
+'    With Selection.Font
+'        .Bold = True
+'        .Color = -16776961
+'        .TintAndShade = 0
+'    End With
+'
+'End Sub
+'
+'Sub HiLightBlue()
+'
+'    With Selection.Font
+'        .Bold = True
+'        .Color = -1003520
+'        .TintAndShade = 0
+'    End With
+'
+'End Sub
+'
+'
+'
+'Sub HiLightGreen()
+'
+'    With Selection.Font
+'        .Color = fGetColorCode("GREEN")
+'        .TintAndShade = 0
+'    End With
+'
+'End Sub
+'
+'
+'Sub HighLightParentheses()
+'
+'    HighLightBetweenWords "{", "}"
+'
+'End Sub
+'
+'
+'
+'Sub HighLightBetweenWords(inptLHS As String, inptRhs As String, Optional inptColor As String = "red")
+'
+'    Dim R As Range
+'    Dim IPos As Long: IPos = 1
+'    Dim sLhs As String: sLhs = inptLHS
+'    Dim sRhs As String: sRhs = inptRhs
+'    'Dim sColor As String: sColor = fGetColorCode(inptColor)
+'
+'    For Each R In Selection
+'
+'        Do Until InStr(IPos, R, sLhs) = 0
+'
+'            With R.Characters(Start:=InStr(IPos, R, sLhs), _
+'                length:=InStr(IPos, R, sRhs) - InStr(IPos, R, sLhs) + 1).Font
+'
+'                .Color = -16776961
+'                .Bold = True
+''               .Name = "ＭＳ ゴシック"
+''               .FontStyle = "Regular"
+''               .Size = 10.5
+''               .Strikethrough = False
+''               .Superscript = False
+''               .Subscript = False
+''               .OutlineFont = False
+''               .Shadow = False
+''               .Underline = xlUnderlineStyleNone
+''               .Color = sColor
+''               .TintAndShade = 0
+''               .ThemeFont = xlThemeFontMinor
+'            End With
+'
+'            IPos = InStr(IPos, R, sRhs) + 1
+'
+'        Loop
+'
+'        IPos = 1
+'
+'    Next R
+'
+'End Sub
+'
+''Sub HighLightBetweenWords(inptLHS As String, inptRhs As String, Optional inptColor As String = "red")
+''
+''    Dim R As Range
+''    Dim IPos As Long: IPos = 1
+''    Dim sLhs As String: sLhs = inptLHS
+''    Dim sRhs As String: sRhs = inptRhs
+''    'Dim sColor As String: sColor = fGetColorCode(inptColor)
+''
+''    For Each R In Selection
+''
+''        Do Until InStr(IPos, R, sLhs) = 0
+''
+''            With R.Characters(Start:=InStr(IPos, R, sLhs), _
+''                length:=InStr(IPos, R, sRhs) - InStr(IPos, R, sLhs) + 1).Font
+''
+''                .Color = -16776961
+''                .Bold = True
+'''               .Name = "ＭＳ ゴシック"
+'''               .FontStyle = "Regular"
+'''               .Size = 10.5
+'''               .Strikethrough = False
+'''               .Superscript = False
+'''               .Subscript = False
+'''               .OutlineFont = False
+'''               .Shadow = False
+'''               .Underline = xlUnderlineStyleNone
+'''               .Color = sColor
+'''               .TintAndShade = 0
+'''               .ThemeFont = xlThemeFontMinor
+''            End With
+''
+''            IPos = InStr(IPos, R, sRhs) + 1
+''
+''        Loop
+''
+''        IPos = 1
+''
+''    Next R
+''
+''End Sub
+'
+'
+'Sub SetCondition_Duplicate()
+'
+'    Selection.FormatConditions.AddUniqueValues
+'    Selection.FormatConditions(Selection.FormatConditions.Count).SetFirstPriority
+'    Selection.FormatConditions(1).DupeUnique = xlDuplicate
+'
+'    With Selection.FormatConditions(1).Font
+'        .Color = -16383844
+'        .TintAndShade = 0
+'    End With
+'
+'    With Selection.FormatConditions(1).Interior
+'        .PatternColorIndex = xlAutomatic
+'        .Color = 13551615
+'        .TintAndShade = 0
+'    End With
+'
+'    Selection.FormatConditions(1).StopIfTrue = True
+'
+'End Sub
+'
+'Sub fClipboard2fontColor(inptColor As String)
+'
+'    Dim i As Long
+'    Dim R As Range
+'    Dim IPos As Long: IPos = 1
+'    Dim sStr As String
+'    Dim cbData As New DataObject 'Microsoft Forms 2.0 Object Library or 参照設定/FM20.DLL
+'
+'    '工事中
+'
+'    cbData.GetFromClipboard
+'    sStr = Trim(cbData.GetText)
+'
+'    For Each R In Selection
+'
+'        Do Until InStr(IPos, R, sStr) = 0
+'
+'            With R.Characters(Start:=InStr(IPos, R, sStr), _
+'                length:=Len(sStr)).Font
+'
+'                .Color = inptColor
+'                .Bold = True
+'
+'            End With
+'
+'            IPos = InStr(IPos, R, sStr) + Len(sStr) + 1
+'
+'            i = i + 1: If i > 1000 Then Exit Sub
+'
+'        Loop
+'
+'        IPos = 1
+'
+'    Next R
+'
+'End Sub
+'
+'
+'Sub HighLightWords(inptStr As String, Optional inptColor As String = "red")
+'
+'    Dim i As Long
+'    Dim R As Range
+'    Dim IPos As Long: IPos = 1
+'    Dim sStr As String: sStr = inptStr
+'
+'    For Each R In Selection
+'
+'        Do Until InStr(IPos, R, sStr) = 0
+'
+'            With R.Characters(Start:=InStr(IPos, R, sStr), _
+'                length:=Len(sStr)).Font
+'
+'                .Color = -16776961
+'                .Bold = True
+'
+'            End With
+'
+'            IPos = InStr(IPos, R, sStr) + Len(sStr) + 1
+'
+'            i = i + 1: If i > 1000 Then Exit Sub
+'
+'        Loop
+'
+'        IPos = 1
+'
+'    Next R
+'
+'End Sub
+'
+'
+'
+'Sub Open_Form()
+'
+'    FORM_MAIN.Show 0
+'
+'End Sub
+'
+'' [DEF] クエリ実行
+'Sub load_kb_sql()
+'
+'    Application.OnKey "^+g", "Run_fill_sql"
+'
+'End Sub
+'
+'
+'
+'' [DEF] ブック名を設定
+'Sub load_kb_CurrBook()
+'
+'    Application.OnKey "^+b", "SetCrrBookName"
+'
+'End Sub
+'
+'
+'
+'' [DEF] シート管理、L[] シートジャンプ
+'Sub load_kb_LinkSht()
+'
+'    ' =======移動済み
+'    Application.OnKey "^+s", "SetCrrSht"
+'    Application.OnKey "^+h", "SelectCrrSht"
+'    Application.OnKey "^+d", "DeleteLinkSheet"
+'    Application.OnKey "^+m", "JumpOrCreateSheetFromLink_Move"
+'    Application.OnKey "^+o", "JumpOrCreateSheetFromLink_Open"
+'    ' =======移動済み
+'
+'End Sub
+'
+'' [DEF] BASE_CODE操作
+'Sub load_kb_basecode()
+'
+'    Application.OnKey "^+m", "Activate_edtMAIN"
+'    Application.OnKey "^+e", "openNew_edtMAIN"
+'
+'End Sub
+'
+'
+'' [DEF] 指定文字を含むセルのハイライト
+'Sub load_kb_Highlight()
+'
+'    Application.OnKey "^+c", "ClearCondition"
+'    Application.OnKey "^+h", "fClipboard2Highlight_red"
+'    Application.OnKey "^+m", "fClipboard2Highlight_gray"
+'
+'    Application.OnKey "^+r", "fClipboard2fontColor_red"
+'    Application.OnKey "^+b", "fClipboard2fontColor_blue"
+'    Application.OnKey "^+g", "fClipboard2fontColor_Green"
+'    Application.OnKey "^+o", "fClipboard2fontColor_Orange"
+'    Application.OnKey "^+y", "fClipboard2fontColor_Yellow"
+'
+'End Sub
+'
+'
+'' [DEF] 文字を色で強調
+'Sub load_kb_color()
+'
+'    Application.OnKey "^+r", "HiLightRed"
+'    Application.OnKey "^+b", "HiLightBlue"
+'    Application.OnKey "^+c", "HiLightClear"
+'    Application.OnKey "^+g", "HiLightGreen"
+'    Application.OnKey "^+y", "HiLightYellow"
+'
+'    ' with condition
+'    Application.OnKey "^+k", "HighLightParentheses"
+'    Application.OnKey "^+d", "SetCondition_Duplicate"
+'
+'End Sub
+'
+'' [DEF] 基本セット
+'Sub load_kb_Std()
+'
+'    Application.OnKey "^+n", "CreateNewWindow"
+'
+'    Application.OnKey "^+x", "Pg_NextPage"
+'    Application.OnKey "^+p", "Pg_PrevPage"
+'
+'    Application.OnKey "^+v", "fPasteSpecial"
+'
+'    Application.OnKey "^+a", "Calc"
+'
+'    ' =======移動済み
+'    Application.OnKey "+{DOWN}", "InsertRange_Down"
+'    Application.OnKey "+{RIGHT}", "InsertRange_Right"
+'    Application.OnKey "+{LEFT}", "InsertRange_Left"
+'    Application.OnKey "+{UP}", "InsertRange_Up"
+'
+'    Application.OnKey "^+{DOWN}", "InsertRow_Down"
+'    Application.OnKey "^+{UP}", "InsertRow_Up"
+'    Application.OnKey "^+{LEFT}", "InsertCol_Left"
+'    Application.OnKey "^+{RIGHT}", "InsertCol_Right"
+'    ' =======移動済み
+'
+'End Sub
+'
+'
+'' [DEF] ボーダー関連
+'Sub load_kb_border()
+'
+'    Application.OnKey "^+c", "MakeBorder_clear"
+'    Application.OnKey "^+t", "MakeBorder_thin"
+'
+'    ' キーバインド被りで一時不使用
+'    'Application.OnKey "^+b", "MakeBorder_bold"
+'    'Application.OnKey "^+h", "MakeBorder_Hairline_btm"
+'
+'End Sub
+'
+'
+'' [DEF] 一括解除
+'Sub load_kb_clear()
+'
+'    Application.OnKey "^+b", ""
+'    Application.OnKey "^+c", ""
+'    Application.OnKey "^+g", ""
+'    Application.OnKey "^+h", ""
+'    Application.OnKey "^+m", ""
+'    Application.OnKey "^+o", ""
+'    Application.OnKey "^+r", ""
+'    Application.OnKey "^+y", ""
+'
+'    Application.OnKey "+{DOWN}", ""
+'    Application.OnKey "+{LEFT}", ""
+'    Application.OnKey "+{RIGHT}", ""
+'    Application.OnKey "+{UP}", ""
+'
+'    Application.OnKey "^+{DOWN}", ""
+'    Application.OnKey "^+{LEFT}", ""
+'
+'End Sub
+'
+'
+'
+'
+''' とりあえず持ってきた
+''
+''Sub HiLightClear()
+''
+''    With Selection.Font
+''        .Bold = False
+''        .ColorIndex = xlAutomatic
+''        .TintAndShade = 0
+''    End With
+''
+''End Sub
+'
+'
+''Sub HiLightRed()
+''
+''    With Selection.Font
+''        .Bold = True
+''        .Color = -16776961
+''        .TintAndShade = 0
+''    End With
+''
+''End Sub
+'
+''Sub HiLightBlue()
+''
+''    With Selection.Font
+''        .Bold = True
+''        .Color = -1003520
+''        .TintAndShade = 0
+''    End With
+''
+''End Sub
+'
+'
+''Sub HiLightGreen()
+''
+''    With Selection.Font
+''        .Color = fGetColorCode("GREEN")
+''        .TintAndShade = 0
+''    End With
+''
+''End Sub
+''
+'
+'Sub HiLightYellow()
+'
+'    With Selection.Font
+'        .Color = fGetColorCode("YELLOW")
+'        .TintAndShade = 0
+'    End With
+'
+'End Sub
+'
+'
+''Sub HighLightParentheses()
+''
+''    HighLightBetweenWords "{", "}"
+''
+''End Sub
+'
+'
+''
+''Sub HighLightBetweenWords(inptLHS As String, inptRhs As String, _
+''                          Optional inptColor As String = "red")
+''
+''    Dim R As Range
+''    Dim IPos As Long: IPos = 1
+''    Dim sLhs As String: sLhs = inptLHS
+''    Dim sRhs As String: sRhs = inptRhs
+''    Dim sColor As String: sColor = fGetColorCode(inptColor)
+''
+''    For Each R In Selection
+''
+''        Do Until InStr(IPos, R, sLhs) = 0
+''
+''            With R.Characters( _
+''                Start:=InStr(IPos, R, sLhs), _
+''                length:=InStr(IPos, R, sRhs) - _
+''                        InStr(IPos, R, sLhs) + 1 _
+''                ).Font
+''
+''                .Color = -16776961
+''                .Bold = True
+''            End With
+''
+''            IPos = InStr(IPos, R, sRhs) + 1
+''
+''        Loop
+''
+''        IPos = 1
+''
+''    Next R
+''
+''End Sub
+'
+''
+''Sub SetCondition_Duplicate()
+''
+''    Selection.FormatConditions.AddUniqueValues
+''    Selection.FormatConditions( _
+''        Selection.FormatConditions.Count _
+''    ).SetFirstPriority
+''
+''    Selection.FormatConditions(1).DupeUnique = xlDuplicate
+''
+''    With Selection.FormatConditions(1).Font
+''        .Color = -16383844
+''        .TintAndShade = 0
+''    End With
+''
+''    With Selection.FormatConditions(1).Interior
+''        .PatternColorIndex = xlAutomatic
+''        .Color = 13551615
+''        .TintAndShade = 0
+''    End With
+''
+''    Selection.FormatConditions(1).StopIfTrue = True
+''
+''End Sub
+'
+'
+'Sub ClearCondition()
+'
+'    Cells.FormatConditions.Delete
+'
+'End Sub
+'
+''
+''Sub fClipboard2fontColor(inptColor As String)
+''
+''    Dim i As Long
+''    Dim R As Range
+''    Dim IPos As Long: IPos = 1
+''    Dim sStr As String
+''    Dim cbData As New DataObject   ' Microsoft Forms 2.0 Object Library
+''
+''    cbData.GetFromClipboard
+''    sStr = Trim(cbData.GetText)
+''
+''    For Each R In Selection
+''
+''        Do Until InStr(IPos, R, sStr) = 0
+''
+''            With R.Characters( _
+''                Start:=InStr(IPos, R, sStr), _
+''                length:=Len(sStr) _
+''                ).Font
+''
+''                .Color = inptColor
+''                .Bold = True
+''
+''            End With
+''
+''            IPos = InStr(IPos, R, sStr) + Len(sStr) + 1
+''
+''            i = i + 1
+''            If i > 1000 Then Exit Sub
+''
+''        Loop
+''
+''        IPos = 1
+''
+''    Next R
+''
+''End Sub
+'
+'
+'Sub fClipboard2fontColor_red()
+'    fClipboard2fontColor fGetColorCode("red")
+'End Sub
+'
+'Sub fClipboard2fontColor_blue()
+'    fClipboard2fontColor fGetColorCode("blue")
+'End Sub
+'
+''Sub HighLightWords(inptStr As String, _
+''                   Optional inptColor As String = "red")
+''
+''    Dim i As Long
+''    Dim R As Range
+''    Dim IPos As Long: IPos = 1
+''    Dim sStr As String: sStr = inptStr
+''
+''    For Each R In Selection
+''
+''        Do Until InStr(IPos, R, sStr) = 0
+''
+''            With R.Characters( _
+''                Start:=InStr(IPos, R, sStr), _
+''                length:=Len(sStr) _
+''                ).Font
+''
+''                .Color = -16776961
+''                .Bold = True
+''
+''            End With
+''
+''            IPos = InStr(IPos, R, sStr) + Len(sStr) + 1
+''
+''            i = i + 1
+''            If i > 1000 Then Exit Sub
+''
+''        Loop
+''
+''        IPos = 1
+''
+''    Next R
+''
+''End Sub
+'
+'
+'
+''Sub Open_Form()
+''    FORM_MAIN.Show 0
+''End Sub
+'
+'
+''Sub load_kb_sql()
+''    Application.OnKey "^+g", "Run_fill_sql"
+''End Sub
+'
+''Sub load_kb_CurrBook()
+''    Application.OnKey "+^b", "SetErrBookName"
+''End Sub
+'
+'
+''Sub load_kb_LinkSht()
+''
+''    Application.OnKey "+^s", "SetErrSht"
+''    Application.OnKey "+^h", "SelectErrSht"
+''    Application.OnKey "+^d", "DeleteLinkSheet"
+''    Application.OnKey "+^m", "JumpOrCreateSheetFromLink_Move"
+''    Application.OnKey "+^o", "JumpOrCreateSheetFromLink_Open"
+''
+''End Sub
+'
+'
+'
+''Sub load_kb_basecode()
+''
+''    Application.OnKey "+^m", "Activate_editMAIN"
+''    Application.OnKey "+^e", "openNew_editMAIN"
+''
+''End Sub
+'
+'
+'
+'Sub load_kb_Highlight()
+'
+'    Application.OnKey "%+c", "ClearCondition"
+'    Application.OnKey "%+r", "fClipboard2Highlight_red"
+'    Application.OnKey "%+g", "fClipboard2Highlight_gray"
+'
+'    Application.OnKey "%+r", "fClipboard2fontColor_red"
+'    Application.OnKey "%+b", "fClipboard2fontColor_blue"
+'    Application.OnKey "%+g", "fClipboard2fontColor_Green"
+'    Application.OnKey "%+o", "fClipboard2fontColor_Orange"
+'    Application.OnKey "%+y", "fClipboard2fontColor_Yellow"
+'
+'End Sub
+'
+'
+'Sub load_kb_color()
+'
+'    Application.OnKey "^+r", "HiLightRed"
+'    Application.OnKey "^+b", "HiLightBlue"
+'    Application.OnKey "^+c", "HiLightClear"
+'    Application.OnKey "^+g", "HiLightGreen"
+'    Application.OnKey "^+y", "HiLightYellow"
+'
+'End Sub
+'
+'
+'
+'
+'
+'Sub load_kb_Std()
+'
+'    Application.OnKey "^+n", "CreateNewWindow"
+'
+'    Application.OnKey "^n", "Pg_NextPage"
+'    Application.OnKey "^p", "Pg_PrevPage"
+'
+'    Application.OnKey "^a", "fPasteSpecial"
+'
+'    Application.OnKey "+{DOWN}", "InsertRange_Down"
+'    Application.OnKey "+{RIGHT}", "InsertRange_Right"
+'    Application.OnKey "+{LEFT}", "InsertRange_Left"
+'    Application.OnKey "+{UP}", "InsertRange_Up"
+'
+'    Application.OnKey "^+{DOWN}", "InsertRow_Down"
+'    Application.OnKey "^+{UP}", "InsertRow_Up"
+'    Application.OnKey "^+{LEFT}", "InsertCol_Left"
+'    Application.OnKey "^+{RIGHT}", "InsertCol_Right"
+'
+'End Sub
+'
+'
+'
+'
+'Sub load_kb_border()
+'
+'    Application.OnKey "+^c", "MakeBorder_clear"
+'    Application.OnKey "+^t", "MakeBorder_thin"
+'
+'    ' 一部無効
+'    ' Application.OnKey "+^b", "MakeBorder_bold"
+'    ' Application.OnKey "+^h", "MakeBorder_Hairline_btm"
+'
+'End Sub
+'
+'
+'
+'Sub load_kb_clear()
+'
+'    Application.OnKey "%+b", ""
+'    Application.OnKey "%+c", ""
+'    Application.OnKey "%+g", ""
+'    Application.OnKey "%+h", ""
+'    Application.OnKey "%+m", ""
+'    Application.OnKey "%+o", ""
+'    Application.OnKey "%+p", ""
+'    Application.OnKey "%+r", ""
+'    Application.OnKey "%+y", ""
+'
+'    Application.OnKey "^+g", ""
+'    Application.OnKey "^+m", ""
+'    Application.OnKey "^+r", ""
+'
+'    Application.OnKey "+{DOWN}", ""
+'    Application.OnKey "+{LEFT}", ""
+'    Application.OnKey "+{RIGHT}", ""
+'    Application.OnKey "+{UP}", ""
+'
+'    Application.OnKey "^+{DOWN}", ""
+'    Application.OnKey "^+{LEFT}", ""
+'
+'End Sub
+'
+'
+'
+'' [DEF] 指定シートを新しいウィンドウで表示
+'Sub openNew_TargetSheet_Awb(strSht As String)
+'
+'    Dim sDstWs As String
+'    sDstWs = strSht
+'
+'    With ActiveWindow.NewWindow
+'        With ActiveWorkbook.Sheets(sDstWs)
+'            .Select
+'        End With
+'    End With
+'
+'End Sub
+'
+'
+'
+'Sub JumpFromPrevSheet()
+'
+'    Dim prevSheet As String
+'    On Error Resume Next
+'
+'    prevSheet = Evaluate("JumpOrCreateSheetFromLink_PrevSheet")
+'
+'    If IsExists(ws(prevSheet)) Then
+'        Sheets(prevSheet).Activate
+'    End If
+'
+'End Sub
+'
+'
+'
+'Sub DeleteLinkSheet()
+'
+'    Dim strDeleteSheetName As String
+'    Dim ws As Worksheet
+'    Dim foundCell As Range
+'    Dim firstAddress As String
+'    Dim keyword As String
+'
+'    strDeleteSheetName = ActiveSheet.Name
+'    keyword = "[" & strDeleteSheetName & "]"
+'
+'    Dim answer As String
+'    answer = MsgBox("リンクシートを削除しますか？", vbYesNo + vbQuestion, "確認")
+'
+'    If answer = vbYes Then
+'
+'        Application.DisplayAlerts = False
+'        ActiveWorkbook.Sheets(strDeleteSheetName).Delete
+'        Application.DisplayAlerts = True
+'
+'        Application.StatusBar = strDeleteSheetName & " を削除しました"
+'
+'        For Each ws In ActiveWorkbook.Sheets
+'
+'            With ws.UsedRange
+'
+'                Set foundCell = .Find(What:=keyword, LookIn:=xlValues, lookat:=xlPart)
+'
+'                If Not foundCell Is Nothing Then
+'                    Do
+'                        If Trim(foundCell.Value) <> "" Then
+'                            foundCell.Value = ""
+'                        End If
+'                        Set foundCell = .FindNext(foundCell)
+'                    Loop While Not foundCell Is Nothing
+'                End If
+'
+'            End With
+'
+'        Next ws
+'
+'    Else
+'
+'        Application.StatusBar = "削除キャンセルしました"
+'
+'    End If
+'
+'End Sub
+'
+'
+'' [DEF]
+'Sub SetCrrSht()
+'
+'    Names.Add Name:="CurrentSheetName", RefersTo:=ActiveSheet.Name
+'    Application.StatusBar = "シート名をセット：" & ActiveSheet.Name
+'
+'End Sub
+'
+'
+'' [DEF]
+'Sub SelectCrrSht()
+'
+'    ActiveWorkbook.Sheets(Evaluate("CurrentSheetName")).Select
+'
+'End Sub
+'
+'
+'' [DEF] 現在のブック名を設定
+'Sub SetCrrBookName()
+'
+'    Names.Add Name:="CurrentBookName", RefersTo:=ActiveWorkbook.Name
+'    Application.StatusBar = "ブック名をセット：" & ActiveWorkbook.Name
+'
+'End Sub
+'
+'
+'
+'' [DEF] 現在のブック名を取得
+'Function GetCrrBookName() As String
+'
+'    If Evaluate("CurrentBookName") = "" Then Call SetCrrBookName
+'    GetCrrBookName = Evaluate("CurrentBookName")
+'
+'End Function
+'
+'
+'
+'' [DEF] セルのコンディションをクリア
+'Sub ClearConditions()
+'
+'    Selection.FormatConditions.Delete
+'
+'End Sub
+'
+'
+'
+'' [DEF] ワークシートをカテゴリソート
+'Sub SortSheetsByName()
+'
+'    Dim i As Long
+'    Dim j As Long
+'    Dim sheetCount As Long
+'
+'    sheetCount = ActiveWorkbook.Sheets.Count
+'
+'    For i = 1 To sheetCount - 1
+'        For j = i + 1 To sheetCount
+'
+'            If UCase(ActiveWorkbook.Sheets(i).Name) > _
+'               UCase(ActiveWorkbook.Sheets(j).Name) Then
+'
+'                ActiveWorkbook.Sheets(j).Move _
+'                    after:=ActiveWorkbook.Sheets(i)
+'
+'            End If
+'
+'        Next j
+'    Next i
+'
+'End Sub
+'
+'
+'' [MOD] WorkSheetFunction Border
+'
+'' [DEF] ボーダーを作成
+'Sub MakeBorder(inptRng As Range)
+'
+'    With inptRng.Borders
+'        .LineStyle = xlContinuous
+'        .ColorIndex = 0
+'        .TintAndShade = 0
+'        .Weight = xlMedium
+'    End With
+'
+'End Sub
+'
+'
+'
+'' [MOD] WorkSheetFunction Show
+'
+'' [DEF] 列を非表示
+'Sub HideRow(Optional inptMark As String = "")
+'    Dim rCell As Range
+'    Dim sMark As String: sMark = inptMark
+'
+'    For Each rCell In Selection
+'        If rCell.Value <> "" Then
+'            If sMark = "" Then
+'                rCell.EntireRow.Hidden = False
+'            Else
+'                If rCell.Value = sMark Then rCell.EntireRow.Hidden = True
+'            End If
+'        End If
+'    Next rCell
+'End Sub
+'
+'' [DEF] 列を非表示（*）
+'Sub HideRow_ast()
+'    HideRow ("*")
+'End Sub
+'
+'' [DEF] 列を非表示（空欄）
+'Sub HideBlankRow()
+'    Dim rCell As Range
+'    For Each rCell In Selection
+'        If rCell.Value = "" Then
+'            rCell.EntireRow.Hidden = True
+'        End If
+'    Next rCell
+'End Sub
+'
+'' [DEF] 列を非表示（正規表現）
+'Sub HideRow_Regex(inptPtn As String)
+'    Dim rCell As Range
+'    Dim sPtn As String: sPtn = inptPtn
+'
+'    For Each rCell In Selection
+'        If rCell.Value <> "" Then
+'            If fRegxTest(rCell.Value, sPtn) = False Then
+'                rCell.EntireRow.Hidden = True
+'            End If
+'        End If
+'    Next rCell
+'End Sub
+'
+'
+'
+'' [DEF] 非表示行を再表示
+'Sub showHiddenRow()
+'    Dim rCell As Range
+'    For Each rCell In Selection
+'        rCell.EntireRow.Hidden = False
+'    Next rCell
+'End Sub
+'
+'' [DEF] 列を非表示
+'Sub HideCol(Optional inptMark As String = "")
+'    Dim rCell As Range
+'    Dim sMark As String: sMark = inptMark
+'
+'    For Each rCell In Selection
+'        If rCell.Value <> "" Then
+'            If sMark = "" Then
+'                rCell.EntireColumn.Hidden = True
+'            Else
+'                If rCell.Value = sMark Then rCell.EntireColumn.Hidden = True
+'            End If
+'        End If
+'    Next rCell
+'End Sub
+'
+'' [DEF] 非表示列を再表示
+'Sub showHiddenCol()
+'    Dim rCell As Range
+'    For Each rCell In Selection
+'        rCell.EntireColumn.Hidden = False
+'    Next rCell
+'End Sub
+'
+'
+'' [DEF] 空白セルを非表示
+'Sub HideEmptyRowsBetweenData()
+'
+'    Dim startcell As Range
+'    Dim toprow As Long
+'    Dim bottomrow As Long
+'    Dim currentrow As Long
+'    Dim ws As Worksheet
+'
+'    Set ws = ActiveSheet
+'    Set startcell = ActiveCell
+'
+'    toprow = startcell.Row
+'    Do While toprow > 1 And IsEmpty(ws.Cells(toprow, startcell.Column).Value)
+'        toprow = toprow - 1
+'    Loop
+'
+'    bottomrow = startcell.Row
+'    Do While bottomrow < ws.Rows.Count And IsEmpty(ws.Cells(bottomrow, startcell.Column).Value)
+'        bottomrow = bottomrow + 1
+'    Loop
+'
+'    For currentrow = toprow + 1 To bottomrow - 1
+'        If IsEmpty(ws.Cells(currentrow, startcell.Column).Value) Then
+'            ws.Rows(currentrow).Hidden = True
+'        End If
+'    Next currentrow
+'
+'End Sub
+'
+'
+'Function GET_FIELD_INFO_EC_ec型(sheetName As String, _
+'                                 physicalName As String, Optional shift As Long = 0) As String
+'    GET_FIELD_INFO_EC_ec型 = GET_FIELD_INFO_EC(sheetName, physicalName, "sap型", shift)
+'End Function
+'
+'Function GET_FIELD_INFO_EC_ec桁数(sheetName As String, _
+'                                   physicalName As String, Optional shift As Long = 0) As String
+'    GET_FIELD_INFO_EC_ec桁数 = GET_FIELD_INFO_EC(sheetName, physicalName, "sap桁数", shift)
+'End Function
+'
+'
+'' [DEF] 項目比較一覧より単体の値を取得
+'' [TAG] シート用関数 単体取得 検索 BAAN 各パラメータ
+'Function GET_FIELD_INFO_EC(sheetName As String, _
+'                           physicalName As String, _
+'                           fieldtype As String, _
+'                           shift As Long) As String
+'
+'    Dim ws As Worksheet
+'    Dim Col As Long
+'    Dim LastCol As Long
+'    Dim MatchCol As Long
+'    Dim Result As Variant
+'
+'    Dim WBNAME As String
+'    Dim wb As Workbook
+'
+'    On Error GoTo ErrHandler
+'
+'    WBNAME = GetWorkbookNameFromTableName_EC(sheetName)
+'    If WBNAME = "" Then
+'        GET_FIELD_INFO_EC = "ブックが見つかりません"
+'        Exit Function
+'    End If
+'
+'    On Error Resume Next
+'    Set wb = Workbooks(WBNAME)
+'    On Error GoTo ErrHandler
+'    If wb Is Nothing Then
+'        GET_FIELD_INFO_EC = "ブックが開かれていません"
+'        Exit Function
+'    End If
+'
+'    Set ws = wb.Sheets(sheetName)
+'
+'    LastCol = ws.Cells(6, ws.Columns.Count).End(xlToLeft).Column
+'    MatchCol = 0
+'
+'    For Col = 2 To LastCol
+'        If Trim(ws.Cells(6, Col).Value) = physicalName Then
+'            MatchCol = Col
+'            Exit For
+'        End If
+'    Next Col
+'
+'    If MatchCol = 0 Then
+'        GET_FIELD_INFO_EC = "物理名が見つかりません"
+'        Exit Function
+'    End If
+'
+'    Select Case LCase(fieldtype)
+'        Case "旧論理"
+'            Result = ws.Cells(4 + shift, MatchCol).Value
+'        Case "旧型"
+'            Result = ws.Cells(9 + shift, MatchCol).Value
+'        Case "旧db列"
+'            Result = ws.Cells(10 + shift, MatchCol).Value
+'        Case "旧桁数"
+'            Result = ws.Cells(11 + shift, MatchCol).Value
+'        Case "旧サンプル"
+'            Result = ws.Cells(14 + shift, MatchCol).Value
+'        Case "sapテーブル"
+'            Result = ws.Cells(115 + shift, MatchCol).Value
+'        Case "sap論理名"
+'            Result = ws.Cells(116 + shift, MatchCol).Value
+'        Case "sap物理名"
+'            Result = ws.Cells(117 + shift, MatchCol).Value
+'        Case "sap型"
+'            Result = ws.Cells(118 + shift, MatchCol).Value
+'        Case "sap桁数"
+'            Result = ws.Cells(119 + shift, MatchCol).Value
+'        Case Else
+'            Result = "fieldType不正"
+'    End Select
+'
+'    GET_FIELD_INFO_EC = Result
+'    Exit Function
+'
+'ErrHandler:
+'    GET_FIELD_INFO_EC = "エラー"
+'End Function
+'
+'' [DEF] GET_FIELD_INFO_EC() から使用。テーブル名からワークブック名を取得
+'Private Function GetWorkbookNameFromTableName_EC(tableName As String) As String
+'
+'
+'End Function
+'
+'' [DEF] GET_FIELD_INFO_EC() から使用。テーブル名からワークブック名を取得
+'' 参照元：GET_FIELD_INFO_EC()
+'Private Function GetWorkbookNameFromTableName_EC(tableName As String) As String
+'
+'    ' 内部パラメータ：※現在非正規化 仮固定中
+'    ' ブック名接頭語  => 固定
+'    ' ブックパス      => シート参照
+'
+'    Dim prefix As String
+'    Dim fileprefix As String
+'    Dim folderpath As String
+'
+'    On Error GoTo ErrHandler
+'
+'    ' 先頭2文字を取得
+'    prefix = Left(tableName, 2)
+'    fileprefix = "ECoosデータ項目比較一覧_" & prefix & "_"
+'
+'    ' フォルダパス
+'    ' #TODO: [確認待] 仮固定
+'    folderpath = ThisWorkbook.Sheets("PRM(MAIN)").Range("C19")
+'    folderpath = "C:\Users\tsk76user\Downloads\管理用\FLD_更新資料項目比較一覧_2510\32_ECoosデータ項目比較一覧"
+'
+'    GetWorkbookNameFromTableName_EC = _
+'        GetLatestWorkbookByPrefix(folderpath, fileprefix)
+'
+'    Exit Function
+'
+'ErrHandler:
+'    GetWorkbookNameFromTableName_EC = ""
+'
+'End Function
+'
+'
+'' [DEF] フォルダパスとフォルダ名から使用するワークブックを特定してブック名を返却
+'' 参照元：GET_FIELD_INFO_EC()
+'Private Function GetLatestWorkbookByPrefix(folderpath As String, _
+'                                           fileprefix As String) As String
+'
+'    ' Print GetLatestWorkbookByPrefix("C:\Users\tsk76user\Downloads\管理用\FLD_更新資料OLD\20250228_OCJ\", "【顧客提示用】OCJ_次期ERPデータ項目比較一覧")
+'
+'    Dim fso As Object
+'    Dim folder As Object
+'    Dim file As Object
+'    Dim matchedFilename As String
+'    Dim latestFilePath As String
+'
+'    On Error GoTo ErrHandler
+'
+'    Set fso = CreateObject("scripting.filesystemobject")
+'    Set folder = fso.GetFolder(folderpath)
+'
+'    matchedFilename = ""
+'
+'    ' 前方一致するファイルを検索
+'    For Each file In folder.Files
+'        If LCase(Left(file.Name, Len(fileprefix))) = LCase(fileprefix) Then
+'            latestFilePath = file.Name
+'            Exit For
+'        End If
+'    Next file
+'
+'    If latestFilePath <> "" Then
+'        GetLatestWorkbookByPrefix = latestFilePath
+'    Else
+'        GetLatestWorkbookByPrefix = ""
+'    End If
+'
+'    Exit Function
+'
+'ErrHandler:
+'    GetLatestWorkbookByPrefix = ""
+'
+'End Function
+'
+'Function GET_FIELD_INFO(sheetName As String, _
+'                        physicalName As String, _
+'                        fieldtype As String, _
+'                        shift As Long) As String
+'
+'    Dim ws As Worksheet
+'    Dim Col As Long
+'    Dim LastCol As Long
+'    Dim MatchCol As Long
+'    Dim Result As Variant
+'
+'    Dim WBNAME As String
+'    Dim wb As Workbook
+'
+'    On Error GoTo ErrHandler
+'
+'    WBNAME = GetWorkbookNameFromTableName(sheetName)
+'    If WBNAME = "" Then
+'        GET_FIELD_INFO = "ブックが見つかりません"
+'        Exit Function
+'    End If
+'
+'    On Error Resume Next
+'    Set wb = Workbooks(WBNAME)
+'    On Error GoTo ErrHandler
+'    If wb Is Nothing Then
+'        GET_FIELD_INFO = "ブックが開かれていません"
+'        Exit Function
+'    End If
+'
+'    Set ws = wb.Sheets(sheetName)
+'
+'    ' 6行目の物理名から列を探す
+'    LastCol = ws.Cells(6, ws.Columns.Count).End(xlToLeft).Column
+'    MatchCol = 0
+'
+'    For Col = 2 To LastCol
+'        If Trim(ws.Cells(6, Col).Value) = physicalName Then
+'            MatchCol = Col
+'            Exit For
+'        End If
+'    Next Col
+'
+'    If MatchCol = 0 Then
+'        GET_FIELD_INFO = "#NOTF"
+'        Exit Function
+'    End If
+'
+'    Select Case LCase(fieldtype)
+'        Case "旧論理"
+'            Result = ws.Cells(4 + shift, MatchCol).Value
+'        Case "旧型"
+'            Result = ws.Cells(9 + shift, MatchCol).Value
+'        Case "旧db列"
+'            Result = ws.Cells(10 + shift, MatchCol).Value
+'        Case "旧桁数"
+'            Result = ws.Cells(11 + shift, MatchCol).Value
+'        Case "旧サンプル"
+'            Result = ws.Cells(14 + shift, MatchCol).Value
+'        Case "sapテーブル"
+'            Result = ws.Cells(115 + shift, MatchCol).Value
+'        Case "sap論理名"
+'            Result = ws.Cells(116 + shift, MatchCol).Value
+'        Case "sap物理名"
+'            Result = ws.Cells(117 + shift, MatchCol).Value
+'        Case "sap型"
+'            Result = ws.Cells(118 + shift, MatchCol).Value
+'        Case "sap桁数"
+'            Result = ws.Cells(119 + shift, MatchCol).Value
+'        Case Else
+'            Result = "fieldType不正"
+'    End Select
+'
+'    GET_FIELD_INFO = Result
+'    Exit Function
+'
+'ErrHandler:
+'    GET_FIELD_INFO = "エラー"
+'
+'End Function
+'
+'
+'
+'' [DEF] GET_FIELD_INFO() から使用。テーブル名からワークブック名を取得
+'' 参照元：GET_FIELD_INFO()
+'Private Function GetWorkbookNameFromTableName(tableName As String) As String
+'
+'    ' 内部パラメータ：※現在非正規化 仮固定中
+'    ' ブック名接頭語  => 固定
+'    ' ブックパス      => シート参照
+'
+'    Dim prefix As String
+'    Dim fileprefix As String
+'    Dim folderpath As String
+'
+'    On Error GoTo ErrHandler
+'
+'    ' 先頭2文字を取得
+'    prefix = Left(tableName, 2)
+'    fileprefix = "【顧客提示用】OCJ_次期ERPデータ項目比較一覧_" & prefix & "_"
+'
+'    ' フォルダパス
+'    ' #TODO: [確認待] 仮固定
+'    folderpath = ThisWorkbook.Sheets("PRM(MAIN)").Range("C19")
+'    folderpath = "C:\Users\tsk76user\Downloads\管理用\FLD_更新資料項目比較一覧_2510\31_SAPデータ項目比較一覧"
+'
+'    GetWorkbookNameFromTableName = _
+'        GetLatestWorkbookByPrefix(folderpath, fileprefix)
+'
+'    Exit Function
+'
+'ErrHandler:
+'    GetWorkbookNameFromTableName = ""
+'
+'End Function
+'
+'
+
