@@ -1,231 +1,685 @@
 Option Explicit
 
 
-'Private Sub Workbook_BeforeClose(Cancel As Boolean)
-'    Call ExportBas
-'    ThisWorkbook.Save
-'End Sub
+Public Function fRetCellAddress(rng As Range) As String
+
+    fRetCellAddress = rng.Address
+
+End Function
+
+
+Public Sub editActiveTagAndReplaceAll()
+
+    Dim srcCell As Range
+    Dim beforeText As String
+    Dim afterText As String
+    Dim tagId As String
+
+    Dim ws As Worksheet
+    Dim c As Range
+    Dim targetRange As Range
+    Dim replaceCount As Long
+
+    On Error GoTo ERR_HANDLER
+
+    Set srcCell = ActiveCell
+    beforeText = CStr(srcCell.Value)
+
+    If Len(beforeText) = 0 Then
+        MsgBox "アクティブセルが空です。", vbExclamation
+        Exit Sub
+    End If
+
+    If Not IsTagFormat(beforeText) Then
+        MsgBox "タグ形式ではありません。" & vbCrLf & _
+               "想定形式: KEY[内容]", vbExclamation
+        Exit Sub
+    End If
+
+    tagId = GetTagId(beforeText)
+
+    afterText = InputBox( _
+        Prompt:="タグを変更してください。" & vbCrLf & _
+                "現在値: " & beforeText, _
+        Title:="タグ変更: " & tagId, _
+        Default:=beforeText _
+    )
+
+    ' キャンセル、または空欄は中止
+    If afterText = "" Then
+        Exit Sub
+    End If
+
+    If afterText = beforeText Then
+        Exit Sub
+    End If
+
+    If Not IsTagFormat(afterText) Then
+        MsgBox "変更後の値がタグ形式ではありません。" & vbCrLf & _
+               "想定形式: KEY[内容]", vbExclamation
+        Exit Sub
+    End If
+
+
+'    If GetTagId(afterText) <> tagId Then
+'        MsgBox "タグ名は変更しない想定です。" & vbCrLf & _
+'               "変更前: " & tagId & vbCrLf & _
+'               "変更後: " & GetTagId(afterText), vbExclamation
+'        Exit Sub
+'    End If
 '
-'Private Sub doClose()
-'    ThisWorkbook.Close
-'End Sub
-'
-'Private Sub Workbook_Open()
-'    Call SetKeyBind
-'End Sub
 
+    Application.ScreenUpdating = False
 
-'==============================
-' Entry_Const.bas
-'==============================
+    For Each ws In ActiveWorkbook.Worksheets
 
-'' API
+        Set targetRange = ws.UsedRange
 
-Public Const CF_UNICODETEXT As Long = 13
+        For Each c In targetRange.Cells
+            If Len(CStr(c.Value)) > 0 Then
+                If InStr(1, CStr(c.Value), beforeText, vbBinaryCompare) > 0 Then
+                    c.Value = Replace(CStr(c.Value), beforeText, afterText, , , vbBinaryCompare)
+                    replaceCount = replaceCount + 1
+                End If
+            End If
+        Next c
 
-Public Const HWND_TOPMOST = -1
-Public Const HWND_NOTOPMOST = -2
+    Next ws
 
-Public Const SWP_NOMOVE = &H2
-Public Const SWP_NOSIZE = &H1
+    Application.ScreenUpdating = True
 
+    MsgBox "置換完了: " & replaceCount & " セル", vbInformation
+    Exit Sub
 
-'' ENTRY_MAIN
+ERR_HANDLER:
+    Application.ScreenUpdating = True
+    MsgBox "editActiveTagAndReplaceAll failed: " & Err.Description, vbExclamation
 
-'fCnvM スプリッタ
-Public Const gSplitter_MMC = "@@"
-Public Const gExpandLabel = "_>> "
+End Sub
 
-' マクロエクスポート
-Public Const gBasExportPath = "C:\Users\thaya\OneDrive\ドキュメント\01_WORKSPACE\ExcelMacro\Export\"     ' ←保存先"
+Private Function IsTagFormat(ByVal text As String) As Boolean
 
-'' N[] 関連 （今のところ未使用）
-Public Const FolderPath_N = "C:\Users\thaya\OneDrive\デスクトップ\BKP_WORK\TextRepo\"
+    Dim regEx As Object
 
+    Set regEx = CreateObject("VBScript.RegExp")
 
-'' UI MODE
+    With regEx
+        .pattern = "^[^\[\]]+\[[^\]]*\]$"
+        .Global = False
+        .IgnoreCase = False
+    End With
 
-Public gIsUIMode As Boolean
+    IsTagFormat = regEx.Test(text)
 
-
-'==============================
-' Entry_Config.bas
-'==============================
-
-' [DEF] 設定されたマクロ参照ワークブックを取得
-Public Function p_wbName_main()
-    '設定されていない場合
-    If GetCrrBookName = "" Then Stop
-    '現在のブック名と作業中のブック名が異なる
-    If GetCrrBookName <> ActiveWorkbook.name Then Stop
-    p_wbName_main = GetCrrBookName
 End Function
 
-' [DEF] XLMA ブックを取得
-Public Function p_wbName_ma()
-    p_wbName_ma = ThisWorkbook.name
+Private Function GetTagId(ByVal tagText As String) As String
+
+    Dim p As Long
+
+    p = InStr(1, tagText, "[", vbBinaryCompare)
+
+    If p > 1 Then
+        GetTagId = Left$(tagText, p - 1)
+    Else
+        GetTagId = ""
+    End If
+
 End Function
 
-' [DEF]
-Sub SetCrrSht()
-    Names.Add name:="CurrentSheetName", RefersTo:=ActiveSheet.name
-    Application.StatusBar = "シート名をセット : " & ActiveSheet.name
+Public Sub replaceTagList( _
+    ByVal tagId As String, _
+    ByVal headerRangeText As String _
+)
+
+    Dim listWs As Worksheet
+    Dim headerCell As Range
+    Dim r As Long
+    Dim baseCol As Long
+
+    Dim linkCell As Range
+    Dim beforeText As String
+    Dim afterText As String
+
+    Dim targetWs As Worksheet
+    Dim targetAddress As String
+    Dim targetCell As Range
+
+    Dim h As Hyperlink
+
+    On Error GoTo ERR_HANDLER
+
+    Set listWs = ActiveSheet
+    Set headerCell = listWs.Range(headerRangeText)
+
+    r = headerCell.row + 1
+    baseCol = headerCell.Column
+
+    Do While listWs.Cells(r, baseCol).Value <> ""
+
+        Set linkCell = listWs.Cells(r, baseCol)
+
+        beforeText = CStr(listWs.Cells(r, baseCol + 1).Value)
+        afterText = CStr(listWs.Cells(r, baseCol + 2).Value)
+
+        ' 移行後が空欄でない場合のみ処理
+        If Len(afterText) > 0 Then
+
+            If linkCell.Hyperlinks.Count > 0 Then
+
+                Set h = linkCell.Hyperlinks(1)
+
+                Set targetCell = GetCellFromSubAddress(h.SubAddress)
+
+                If Not targetCell Is Nothing Then
+                    ' ハイパーリンク先セルの値を置換
+                    targetCell.Value = Replace(CStr(targetCell.Value), beforeText, afterText)
+                End If
+
+            End If
+
+        End If
+
+        r = r + 1
+
+    Loop
+
+    MsgBox ("タグ置換完了")
+
+    Exit Sub
+
+ERR_HANDLER:
+    MsgBox "replaceTagList failed: " & Err.Description, vbExclamation
+
 End Sub
 
-Sub SelectCrrSht()
-    ActiveWorkbook.Sheets(Evaluate("CurrentSheetName")).Select
-End Sub
+Private Function GetCellFromSubAddress(ByVal subAddressText As String) As Range
 
-' [DEF] 現在のブック名を設定
-Sub SetCrrBookName()
-    Names.Add name:="CurrentBookName", RefersTo:=ActiveWorkbook.name
-    Application.StatusBar = "ブック名をセット : " & ActiveWorkbook.name
-End Sub
+    Dim sheetName As String
+    Dim cellAddress As String
+    Dim pos As Long
 
-' [DEF] 現在のブック名を取得
-Function GetCrrBookName() As String
-    If Evaluate("CurrentBookName") = "" Then Call SetCrrBookName
-    GetCrrBookName = Evaluate("CurrentBookName")
+    On Error GoTo ERR_HANDLER
+
+    pos = InStr(1, subAddressText, "!", vbTextCompare)
+
+    If pos = 0 Then
+        Set GetCellFromSubAddress = Nothing
+        Exit Function
+    End If
+
+    sheetName = Left$(subAddressText, pos - 1)
+    cellAddress = Mid$(subAddressText, pos + 1)
+
+    ' 'Sheet Name'!A1 のクォート除去
+    If Left$(sheetName, 1) = "'" And Right$(sheetName, 1) = "'" Then
+        sheetName = Mid$(sheetName, 2, Len(sheetName) - 2)
+        sheetName = Replace(sheetName, "''", "'")
+    End If
+
+    Set GetCellFromSubAddress = ActiveWorkbook.Worksheets(sheetName).Range(cellAddress)
+
+    Exit Function
+
+ERR_HANDLER:
+    Set GetCellFromSubAddress = Nothing
+
 End Function
 
-' [DEF] 設定中のワークブックのフルパスを取得
-Function GetTargetWb_FullPath() As String
-    GetTargetWb_FullPath = Workbooks(p_wbName_main()).Path & "\" & Workbooks(p_wbName_main()).name
+Public Sub getTagList( _
+    ByVal tagId As String, _
+    ByVal outputHeaderRangeText As String _
+)
+
+    Dim outWs As Worksheet
+    Dim outHeader As Range
+    Dim ws As Worksheet
+    Dim targetRange As Range
+    Dim c As Range
+    Dim regEx As Object
+    Dim matches As Object
+    Dim m As Object
+    Dim outRow As Long
+    Dim outCol As Long
+
+    On Error GoTo ERR_HANDLER
+
+    Set outWs = ActiveSheet
+    Set outHeader = outWs.Range(outputHeaderRangeText)
+
+    outRow = outHeader.row + 1
+    outCol = outHeader.Column
+
+    Dim clearLastRow As Long
+    
+    clearLastRow = GetListLastRow(outWs, outRow, outCol, 2)
+    
+    If clearLastRow >= outRow Then
+        outWs.Range(outWs.Cells(outRow, outCol), _
+                    outWs.Cells(clearLastRow, outCol + 1)).ClearContents
+    End If
+
+    Set regEx = CreateObject("VBScript.RegExp")
+    With regEx
+        .pattern = EscapeRegExp(tagId) & "\[[^\]]*\]"
+        .Global = True
+        .IgnoreCase = False
+    End With
+
+    For Each ws In ActiveWorkbook.Worksheets
+
+        ' 自シート以外を対象
+        If ws.name <> outWs.name Then
+
+            Set targetRange = ws.UsedRange
+
+            For Each c In targetRange.Cells
+
+                If Len(CStr(c.Value)) > 0 Then
+
+                    If regEx.Test(CStr(c.Value)) Then
+
+                        Set matches = regEx.Execute(CStr(c.Value))
+
+                        For Each m In matches
+
+                            outWs.Hyperlinks.Add _
+                                Anchor:=outWs.Cells(outRow, outCol), _
+                                Address:="", _
+                                SubAddress:="'" & ws.name & "'!" & c.Address(False, False), _
+                                TextToDisplay:=ws.name
+
+                            outWs.Cells(outRow, outCol + 1).Value = CStr(m.Value)
+
+                            outRow = outRow + 1
+
+                        Next m
+
+                    End If
+
+                End If
+
+            Next c
+
+        End If
+
+    Next ws
+
+    Exit Sub
+
+ERR_HANDLER:
+    MsgBox "getTagList failed: " & Err.Description, vbExclamation
+
+End Sub
+
+Private Function GetListLastRow( _
+    ByVal ws As Worksheet, _
+    ByVal startRow As Long, _
+    ByVal startCol As Long, _
+    ByVal colCount As Long _
+) As Long
+
+    Dim r As Long
+    Dim c As Long
+    Dim lastUsedRow As Long
+
+    lastUsedRow = ws.UsedRange.row + ws.UsedRange.Rows.Count - 1
+
+    For r = startRow To lastUsedRow
+
+        Dim hasValue As Boolean
+        hasValue = False
+
+        For c = startCol To startCol + colCount - 1
+            If Len(CStr(ws.Cells(r, c).Value)) > 0 Then
+                hasValue = True
+                Exit For
+            End If
+        Next c
+
+        If Not hasValue Then
+            GetListLastRow = r - 1
+            Exit Function
+        End If
+
+    Next r
+
+    GetListLastRow = lastUsedRow
+
 End Function
 
-' [DEF] 設定中のワークブック名を取得
-Function GetTargetWb_Name() As String
-    GetTargetWb_Name = GetCrrBookName
-    ' #TODO : [確認] 廃止
-    ' Workbooks(p_wbName_main()).Name
+Private Function EscapeRegExp(ByVal text As String) As String
+
+    Dim chars As Variant
+    Dim ch As Variant
+
+    chars = Array("\", ".", "^", "$", "*", "+", "?", "(", ")", "[", "]", "{", "}", "|")
+
+    EscapeRegExp = text
+
+    For Each ch In chars
+        EscapeRegExp = Replace(EscapeRegExp, CStr(ch), "\" & CStr(ch))
+    Next ch
+
 End Function
 
 
 
-'==============================
-' Entry_KeyBind.bas
-'==============================
+' [DEF]　ブック内の　シートプロパティをリセット
+Public Sub ClearSheetProperties()
 
-
- Sub SetKeyBind()
-
-    Application.OnKey "+%{DOWN}"
-    Application.OnKey "+%{RIGHT}"
-    Application.OnKey "+%{LEFT}"
-    Application.OnKey "+%{UP}"
+    Dim ws As Worksheet
+    Dim p As CustomProperty
     
-    Application.OnKey "+^%{DOWN}"
-    Application.OnKey "+^%{UP}"
-    Application.OnKey "+^%{LEFT}"
-    Application.OnKey "+^%{RIGHT}"
-    
-    Application.OnKey "+^{DOWN}"
-    Application.OnKey "+^{UP}"
-    Application.OnKey "+^{LEFT}"
-    Application.OnKey "+^{RIGHT}"
-    
-    Application.OnKey "+^%n"
-    Application.OnKey "^n"
-    Application.OnKey "+^m"
-    Application.OnKey "+^o"
-    
-    
-    Call load_kb_LinkSht
-    Call load_kb_color
-    Call load_kb_Window
-    Call load_kb_SetParam
-    Call load_kb_rowExpand
-    Call load_kb_EditRange
-    Call load_kb_util
-    
-    ' M N L 系を一本化したい
-'    Application.OnKey "+^%", "OpenOrCreateTxtByActiveCellNKey"
-    
-    
-' まだセットしてない
-' Calc
-
-'失敗している
-' Application.OnKey "^+m", "RunKey_M"
-
-' Application.OnKey "^+m", ""
-' Application.OnKey "^+%m", ""
-'
- Application.OnKey "^+%r", "RunMacroFromCell"
+    For Each ws In ActiveWorkbook.Sheets
+        For Each p In ws.CustomProperties
+            p.Delete
+        Next p
+    Next ws
 
 End Sub
 
-Sub load_kb_util()
-    Application.OnKey "^u", "ToggleUIMode"
-    Application.OnKey "^t", "ToggleTopMode"
+' [DEF] シート順変更
+Public Sub SortSheetOrder(ByVal headerRangeText As String)
+
+    Dim outWs As Worksheet
+    Dim headerCell As Range
+
+    Dim r As Long
+    Dim baseCol As Long
+
+    Dim targetPos As Long
+    Dim sheetName As String
+
+    Dim ws As Worksheet
+
+    On Error GoTo ERR_HANDLER
+
+    Set outWs = ActiveSheet
+    Set headerCell = outWs.Range(headerRangeText)
+
+    baseCol = headerCell.Column
+
+    r = headerCell.row + 1
+    targetPos = 1
+
+    Application.ScreenUpdating = False
+
+    Do While Len(Trim$(outWs.Cells(r, baseCol + 1).Value)) > 0
+
+        sheetName = Trim$(outWs.Cells(r, baseCol + 1).Value)
+
+        Set ws = Nothing
+
+        On Error Resume Next
+        Set ws = ActiveWorkbook.Worksheets(sheetName)
+        On Error GoTo 0
+
+        If Not ws Is Nothing Then
+
+            If ws.Index <> targetPos Then
+
+                ws.Move Before:=ActiveWorkbook.Worksheets(targetPos)
+
+            End If
+
+            targetPos = targetPos + 1
+
+        End If
+
+        r = r + 1
+
+    Loop
+
+    Application.ScreenUpdating = True
+
+    Exit Sub
+
+ERR_HANDLER:
+
+    Application.ScreenUpdating = True
+
+    MsgBox _
+        "SortSheetOrder failed : " & Err.Description, _
+        vbExclamation
+
 End Sub
 
-Sub load_kb_SetParam()
-    Application.OnKey "+^%b", "SetCrrBookName"
-    Application.OnKey "+^%s", "SetCrrSht"
-    Application.OnKey "+^%h", "SelectCrrSht"
+' [DEF] [シート管理] シート名とコメントをリプレイス
+Public Sub ReplaceNameAndCmt(ByVal headerRangeText As String)
+
+    Dim outWs As Worksheet
+    Dim headerCell As Range
+    Dim wb As Workbook
+    Dim r As Long
+    Dim baseCol As Long
+
+    Dim sheetName As String
+    Dim replaceName As String
+    Dim newComment As String
+
+    Dim ws As Worksheet
+
+    On Error GoTo ERR_HANDLER
+
+    Set wb = ActiveWorkbook
+    Set outWs = ActiveSheet
+    Set headerCell = outWs.Range(headerRangeText)
+
+    baseCol = headerCell.Column
+    r = headerCell.row + 1
+
+    Application.ScreenUpdating = False
+
+    Do While Len(CStr(outWs.Cells(r, baseCol + 1).Value)) > 0
+
+        sheetName = CStr(outWs.Cells(r, baseCol + 1).Value)      ' SheetName列
+        replaceName = CStr(outWs.Cells(r, baseCol + 2).Value)    ' Replace列
+        newComment = CStr(outWs.Cells(r, baseCol + 4).Value)     ' Comment列
+
+        Set ws = Nothing
+        Set ws = GetWorksheetByName(wb, sheetName)
+
+        If Not ws Is Nothing Then
+
+            ' --- シート名変更 ---
+            If Len(replaceName) > 0 Then
+                If ws.name <> replaceName Then
+                    ws.name = replaceName
+
+                    ' 一覧側も更新
+                    outWs.Cells(r, baseCol + 1).Value = replaceName
+                    outWs.Cells(r, baseCol + 3).Value = "L[" & replaceName & "]"
+
+                    sheetName = replaceName
+                End If
+            End If
+
+            ' --- Comment変更 ---
+            If GetSheetProperty(ws, "SheetComment") <> newComment Then
+                SetSheetProperty ws, "SheetComment", newComment
+            End If
+
+        End If
+
+        r = r + 1
+
+    Loop
+
+    Application.ScreenUpdating = True
+
+    MsgBox "ReplaceNameAndCmt 完了", vbInformation
+    Exit Sub
+
+ERR_HANDLER:
+    Application.ScreenUpdating = True
+    MsgBox "ReplaceNameAndCmt failed: " & Err.Description, vbExclamation
+
 End Sub
 
-Sub load_kb_Window()
-    Application.OnKey "+^%n", "OpenNewWindow"
-End Sub
 
-Sub load_kb_rowExpand()
-    Application.OnKey "^+h", "Hidden_rows"
-    Application.OnKey "^+e", "Expand_rows"
-End Sub
+Private Function GetWorksheetByName( _
+    ByVal wb As Workbook, _
+    ByVal sheetName As String _
+) As Worksheet
 
-Sub load_kb_color()
-'    Application.OnKey "^+%u", "UnderlineBottomOfSelection" ' 下線を引く
-    Application.OnKey "^+r", "SetRedBold"
-    Application.OnKey "^+b", "SetBlueBold"
-    Application.OnKey "+^c", "ResetFont" ' 選択行の装飾を解除する
-    Application.OnKey "^r", "HighlightFromClipboard_Red" ' 選択範囲内に含まれるクリップボードの文字を赤太文字にする
-End Sub
+    On Error GoTo ERR_HANDLER
+    Set GetWorksheetByName = wb.Worksheets(sheetName)
+    Exit Function
 
+ERR_HANDLER:
+    Set GetWorksheetByName = Nothing
 
+End Function
 
-' [DEF] シート管理、L[] シート操作
-Sub load_kb_LinkSht()
-    Application.OnKey "+^%u", "RenameSheetAndUpdateLinks"
-    Application.OnKey "+^%d", "DeleteLinkSheet"
-    Application.OnKey "+^%m", "JumpOrCreateSheetFromLink_Move"
-    Application.OnKey "+^%o", "JumpOrCreateSheetFromLink_Open"
-End Sub
+' [DEF] [シート管理] シート名一覧を出力
+Public Sub outputSheetList(ByVal headerRangeText As String)
 
+    Dim outWs As Worksheet
+    Dim headerCell As Range
+    Dim wb As Workbook
+    Dim ws As Worksheet
 
-' [DEF] シート操作
-Sub load_kb_EditRange()
-    Application.OnKey "+%{DOWN}", "InsertRange_Down"
-    Application.OnKey "+%{RIGHT}", "InsertRange_Right"
-    Application.OnKey "+%{LEFT}", "InsertRange_Left"
-    Application.OnKey "+%{UP}", "InsertRange_Up"
-    
-    Application.OnKey "+^%{DOWN}", "InsertRow_Down"
-    Application.OnKey "+^%{UP}", "InsertRow_Up"
-    Application.OnKey "+^%{LEFT}", "InsertCol_Left"
-    Application.OnKey "+^%{RIGHT}", "InsertCol_Right"
-    
-    Application.OnKey "%{UP}", "MoveRowUp"     ' Alt + ↑
-    Application.OnKey "%{DOWN}", "MoveRowDown" ' Alt + ↓
-    
-    Application.OnKey "+^a", "Calc"
+    Dim startRow As Long
+    Dim startCol As Long
+    Dim outRow As Long
+    Dim no As Long
+    Dim clearLastRow As Long
+
+    On Error GoTo ERR_HANDLER
+
+    Set wb = ActiveWorkbook
+    Set outWs = ActiveSheet
+    Set headerCell = outWs.Range(headerRangeText)
+
+    startRow = headerCell.row + 1
+    startCol = headerCell.Column
+
+    ' ヘッダ出力
+    outWs.Cells(headerCell.row, startCol).Value = "No"
+    outWs.Cells(headerCell.row, startCol + 1).Value = "SheetName"
+    outWs.Cells(headerCell.row, startCol + 2).Value = "Replace"
+    outWs.Cells(headerCell.row, startCol + 3).Value = "L[]"
+    outWs.Cells(headerCell.row, startCol + 4).Value = "SheetComment"
+
+    ' 初期化：ヘッダ以下の連続した値だけクリア
+    clearLastRow = GetListLastRow(outWs, startRow, startCol, 5)
+
+    If clearLastRow >= startRow Then
+        outWs.Range(outWs.Cells(startRow, startCol), _
+                    outWs.Cells(clearLastRow, startCol + 4)).ClearContents
+    End If
+
+    outRow = startRow
+    no = 1
+
+    For Each ws In wb.Worksheets
+
+        outWs.Cells(outRow, startCol).Value = no
+        outWs.Cells(outRow, startCol + 1).Value = ws.name
+
+        ' Replace列は今回の処理では空欄
+        outWs.Cells(outRow, startCol + 2).Value = ""
+
+        outWs.Cells(outRow, startCol + 3).Value = "L[" & ws.name & "]"
+        outWs.Cells(outRow, startCol + 4).Value = GetSheetProperty(ws, "SheetComment")
         
-        
-    ' 動作未確認
-'    Application.OnKey "+%n", "Pg_NextPage"
-'    Application.OnKey "+%p", "Pg_PrevPage"
-    
-    Application.OnKey "^p", "fPasteSpecial"
-    Application.OnKey "+%s", "SortSheetsByName"
-    Application.OnKey "+%h", "HideEmptyRowsBetweenData"
+        outRow = outRow + 1
+        no = no + 1
 
+    Next ws
+
+    Exit Sub
+
+ERR_HANDLER:
+    MsgBox "outputSheetList failed: " & Err.Description, vbExclamation
 
 End Sub
 
 
+' [DEF]　汎用　シートプロパティ取得
+Public Function GetSheetProperty( _
+    ByVal ws As Worksheet, _
+    ByVal propName As String, _
+    Optional ByVal defaultValue As String = "" _
+) As String
 
-'==============================
-' Entry_Main.bas
-'==============================
+    Dim p As CustomProperty
+
+    For Each p In ws.CustomProperties
+        If p.name = propName Then
+            GetSheetProperty = CStr(p.Value)
+            Exit Function
+        End If
+    Next p
+
+    GetSheetProperty = defaultValue
+
+End Function
+
+' [DEF]　汎用　シートプロパティ変更
+Public Sub SetSheetProperty( _
+    ByVal ws As Worksheet, _
+    ByVal propName As String, _
+    ByVal propValue As String _
+)
+
+    Dim p As CustomProperty
+
+    ' 既存があれば更新
+    For Each p In ws.CustomProperties
+        If p.name = propName Then
+            p.Value = propValue
+            Exit Sub
+        End If
+    Next p
+
+    ' なければ追加
+    ws.CustomProperties.Add _
+        name:=propName, _
+        Value:=propValue
+
+End Sub
+
+' [DEF]　汎用　リスト最終位置を出力
+Private Function GetListLastRow( _
+    ByVal ws As Worksheet, _
+    ByVal startRow As Long, _
+    ByVal startCol As Long, _
+    ByVal colCount As Long _
+) As Long
+
+    Dim r As Long
+    Dim c As Long
+    Dim lastUsedRow As Long
+    Dim hasValue As Boolean
+
+    If WorksheetFunction.CountA(ws.Cells) = 0 Then
+        GetListLastRow = startRow - 1
+        Exit Function
+    End If
+
+    lastUsedRow = ws.UsedRange.row + ws.UsedRange.Rows.Count - 1
+
+    For r = startRow To lastUsedRow
+
+        hasValue = False
+
+        For c = startCol To startCol + colCount - 1
+            If Len(CStr(ws.Cells(r, c).Value)) > 0 Then
+                hasValue = True
+                Exit For
+            End If
+        Next c
+
+        If Not hasValue Then
+            GetListLastRow = r - 1
+            Exit Function
+        End If
+
+    Next r
+
+    GetListLastRow = lastUsedRow
+
+End Function
 
