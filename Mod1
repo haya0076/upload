@@ -1,13 +1,124 @@
 Option Explicit
 
 
-Public Function fRetCellAddress(rng As Range) As String
+' リスト作成 ネスト対応
+Public Sub getTagList( _
+    ByVal tagId As String, _
+    ByVal outputHeaderRangeText As String _
+)
 
-    fRetCellAddress = rng.Address
+    Dim outWs As Worksheet
+    Dim outHeader As Range
+    Dim ws As Worksheet
+    Dim targetRange As Range
+    Dim c As Range
+    Dim regEx As Object
+    Dim matches As Object
+    Dim m As Object
+    Dim outRow As Long
+    Dim outCol As Long
+    Dim firstAddress  As String
+    Dim checkValue As String
+    Dim rng As Range
+    
+    On Error GoTo ERR_HANDLER
 
-End Function
+    Set outWs = ActiveSheet
+    Set outHeader = outWs.Range(outputHeaderRangeText)
+
+    outRow = outHeader.row + 1
+    outCol = outHeader.Column
+
+    Dim clearLastRow As Long
+    
+    Dim searchTag As String
+    Dim patternText As String
+    
+    searchTag = GetTagFindKey(tagId)
+    patternText = BuildTagPattern(tagId)
+
+    ' 現在の出力をクリア
+    clearLastRow = GetListLastRow(outWs, outRow, outCol, 2)
+    
+    If clearLastRow >= outRow Then
+        outWs.Range(outWs.Cells(outRow, outCol), _
+                    outWs.Cells(clearLastRow, outCol + 1)).ClearContents
+    End If
+
+    ' REGXパターン登録
+    Set regEx = CreateObject("VBScript.RegExp")
+    With regEx
+        .pattern = patternText
+        .Global = True
+        .IgnoreCase = False
+    End With
+
+For Each ws In ActiveWorkbook.Worksheets
+
+    If ws.name <> outWs.name Then
+
+        Set rng = ws.UsedRange
+        
+        Set c = rng.Find( _
+            What:=searchTag, _
+            LookIn:=xlValues, _
+            LookAt:=xlPart, _
+            SearchOrder:=xlByRows, _
+            SearchDirection:=xlNext, _
+            MatchCase:=False _
+        )
+
+        If Not c Is Nothing Then
+
+            firstAddress = c.Address(External:=True)
+
+            Do
+                checkValue = CStr(c.Value2)
+
+                If regEx.test(checkValue) Then
+
+                    Set matches = regEx.Execute(checkValue)
+
+                    For Each m In matches
+
+                        outWs.Hyperlinks.Add _
+                            Anchor:=outWs.Cells(outRow, outCol), _
+                            Address:="", _
+                            SubAddress:="'" & ws.name & "'!" & c.Address(False, False), _
+                            TextToDisplay:=ws.name
+
+                        outWs.Cells(outRow, outCol + 1).Value = CStr(m.Value)
+
+                        outRow = outRow + 1
+
+                    Next m
+
+                End If
+
+                Set c = rng.FindNext(c)
+
+                If c Is Nothing Then Exit Do
+                If c.Address(External:=True) = firstAddress Then Exit Do
+
+            Loop
+
+        End If
+
+    End If
+
+Next ws
+
+Exit Sub
+
+ERR_HANDLER:
+    MsgBox "getTagList failed: " & Err.Description, vbExclamation
+
+        
+End Sub
 
 
+' TAGリプレイス単体　ショートカットキーからの使用を想定
+' 対象：TAG[]形式、セル完全一致、ネストタグ可
 Public Sub editActiveTagAndReplaceAll()
 
     Dim srcCell As Range
@@ -19,6 +130,7 @@ Public Sub editActiveTagAndReplaceAll()
     Dim c As Range
     Dim targetRange As Range
     Dim replaceCount As Long
+    Dim firstAddress As String
 
     On Error GoTo ERR_HANDLER
 
@@ -32,7 +144,7 @@ Public Sub editActiveTagAndReplaceAll()
 
     If Not IsTagFormat(beforeText) Then
         MsgBox "タグ形式ではありません。" & vbCrLf & _
-               "想定形式: KEY[内容]", vbExclamation
+               "想定形式: TAG[内容]", vbExclamation
         Exit Sub
     End If
 
@@ -56,7 +168,7 @@ Public Sub editActiveTagAndReplaceAll()
 
     If Not IsTagFormat(afterText) Then
         MsgBox "変更後の値がタグ形式ではありません。" & vbCrLf & _
-               "想定形式: KEY[内容]", vbExclamation
+               "想定形式: TAG[内容]", vbExclamation
         Exit Sub
     End If
 
@@ -75,15 +187,33 @@ Public Sub editActiveTagAndReplaceAll()
 
         Set targetRange = ws.UsedRange
 
-        For Each c In targetRange.Cells
-            If Len(CStr(c.Value)) > 0 Then
-                If InStr(1, CStr(c.Value), beforeText, vbBinaryCompare) > 0 Then
-                    c.Value = Replace(CStr(c.Value), beforeText, afterText, , , vbBinaryCompare)
-                    replaceCount = replaceCount + 1
-                End If
-            End If
-        Next c
+        Set c = targetRange.Find( _
+            What:=beforeText, _
+            LookIn:=xlValues, _
+            LookAt:=xlWhole, _
+            SearchOrder:=xlByRows, _
+            SearchDirection:=xlNext, _
+            MatchCase:=False _
+        )
 
+        If c Is Nothing Then GoTo lblNext
+        firstAddress = c.Address(External:=True)
+
+        Do
+    
+            If beforeText <> afterText Then
+                c.Value = afterText
+                replaceCount = replaceCount + 1
+            End If
+
+            Set c = targetRange.FindNext(c)
+            
+            If c Is Nothing Then Exit Do
+            If c.Address(External:=True) = firstAddress Then Exit Do
+
+        Loop
+        
+lblNext:
     Next ws
 
     Application.ScreenUpdating = True
@@ -97,6 +227,13 @@ ERR_HANDLER:
 
 End Sub
 
+Public Function fRetCellAddress(rng As Range) As String
+
+    fRetCellAddress = rng.Address
+
+End Function
+
+
 Private Function IsTagFormat(ByVal text As String) As Boolean
 
     Dim regEx As Object
@@ -109,7 +246,7 @@ Private Function IsTagFormat(ByVal text As String) As Boolean
         .IgnoreCase = False
     End With
 
-    IsTagFormat = regEx.Test(text)
+    IsTagFormat = regEx.test(text)
 
 End Function
 
@@ -226,92 +363,6 @@ ERR_HANDLER:
 
 End Function
 
-Public Sub getTagList( _
-    ByVal tagId As String, _
-    ByVal outputHeaderRangeText As String _
-)
-
-    Dim outWs As Worksheet
-    Dim outHeader As Range
-    Dim ws As Worksheet
-    Dim targetRange As Range
-    Dim c As Range
-    Dim regEx As Object
-    Dim matches As Object
-    Dim m As Object
-    Dim outRow As Long
-    Dim outCol As Long
-
-    On Error GoTo ERR_HANDLER
-
-    Set outWs = ActiveSheet
-    Set outHeader = outWs.Range(outputHeaderRangeText)
-
-    outRow = outHeader.row + 1
-    outCol = outHeader.Column
-
-    Dim clearLastRow As Long
-    
-    clearLastRow = GetListLastRow(outWs, outRow, outCol, 2)
-    
-    If clearLastRow >= outRow Then
-        outWs.Range(outWs.Cells(outRow, outCol), _
-                    outWs.Cells(clearLastRow, outCol + 1)).ClearContents
-    End If
-
-    Set regEx = CreateObject("VBScript.RegExp")
-    With regEx
-        .pattern = EscapeRegExp(tagId) & "\[[^\]]*\]"
-        .Global = True
-        .IgnoreCase = False
-    End With
-
-    For Each ws In ActiveWorkbook.Worksheets
-
-        ' 自シート以外を対象
-        If ws.name <> outWs.name Then
-
-            Set targetRange = ws.UsedRange
-
-            For Each c In targetRange.Cells
-
-                If Len(CStr(c.Value)) > 0 Then
-
-                    If regEx.Test(CStr(c.Value)) Then
-
-                        Set matches = regEx.Execute(CStr(c.Value))
-
-                        For Each m In matches
-
-                            outWs.Hyperlinks.Add _
-                                Anchor:=outWs.Cells(outRow, outCol), _
-                                Address:="", _
-                                SubAddress:="'" & ws.name & "'!" & c.Address(False, False), _
-                                TextToDisplay:=ws.name
-
-                            outWs.Cells(outRow, outCol + 1).Value = CStr(m.Value)
-
-                            outRow = outRow + 1
-
-                        Next m
-
-                    End If
-
-                End If
-
-            Next c
-
-        End If
-
-    Next ws
-
-    Exit Sub
-
-ERR_HANDLER:
-    MsgBox "getTagList failed: " & Err.Description, vbExclamation
-
-End Sub
-
 Private Function GetListLastRow( _
     ByVal ws As Worksheet, _
     ByVal startRow As Long, _
@@ -348,338 +399,72 @@ Private Function GetListLastRow( _
 
 End Function
 
-Private Function EscapeRegExp(ByVal text As String) As String
-
-    Dim chars As Variant
-    Dim ch As Variant
-
-    chars = Array("\", ".", "^", "$", "*", "+", "?", "(", ")", "[", "]", "{", "}", "|")
-
-    EscapeRegExp = text
-
-    For Each ch In chars
-        EscapeRegExp = Replace(EscapeRegExp, CStr(ch), "\" & CStr(ch))
-    Next ch
-
-End Function
-
-
-
-' [DEF]　ブック内の　シートプロパティをリセット
-Public Sub ClearSheetProperties()
-
-    Dim ws As Worksheet
-    Dim p As CustomProperty
-    
-    For Each ws In ActiveWorkbook.Sheets
-        For Each p In ws.CustomProperties
-            p.Delete
-        Next p
-    Next ws
-
-End Sub
-
-' [DEF] シート順変更
-Public Sub SortSheetOrder(ByVal headerRangeText As String)
-
-    Dim outWs As Worksheet
-    Dim headerCell As Range
-
-    Dim r As Long
-    Dim baseCol As Long
-
-    Dim targetPos As Long
-    Dim sheetName As String
-
-    Dim ws As Worksheet
-
-    On Error GoTo ERR_HANDLER
-
-    Set outWs = ActiveSheet
-    Set headerCell = outWs.Range(headerRangeText)
-
-    baseCol = headerCell.Column
-
-    r = headerCell.row + 1
-    targetPos = 1
-
-    Application.ScreenUpdating = False
-
-    Do While Len(Trim$(outWs.Cells(r, baseCol + 1).Value)) > 0
-
-        sheetName = Trim$(outWs.Cells(r, baseCol + 1).Value)
-
-        Set ws = Nothing
-
-        On Error Resume Next
-        Set ws = ActiveWorkbook.Worksheets(sheetName)
-        On Error GoTo 0
-
-        If Not ws Is Nothing Then
-
-            If ws.Index <> targetPos Then
-
-                ws.Move Before:=ActiveWorkbook.Worksheets(targetPos)
-
-            End If
-
-            targetPos = targetPos + 1
-
-        End If
-
-        r = r + 1
-
-    Loop
-
-    Application.ScreenUpdating = True
-
-    Exit Sub
-
-ERR_HANDLER:
-
-    Application.ScreenUpdating = True
-
-    MsgBox _
-        "SortSheetOrder failed : " & Err.Description, _
-        vbExclamation
-
-End Sub
-
-' [DEF] [シート管理] シート名とコメントをリプレイス
-Public Sub ReplaceNameAndCmt(ByVal headerRangeText As String)
-
-    Dim outWs As Worksheet
-    Dim headerCell As Range
-    Dim wb As Workbook
-    Dim r As Long
-    Dim baseCol As Long
-
-    Dim sheetName As String
-    Dim replaceName As String
-    Dim newComment As String
-
-    Dim ws As Worksheet
-
-    On Error GoTo ERR_HANDLER
-
-    Set wb = ActiveWorkbook
-    Set outWs = ActiveSheet
-    Set headerCell = outWs.Range(headerRangeText)
-
-    baseCol = headerCell.Column
-    r = headerCell.row + 1
-
-    Application.ScreenUpdating = False
-
-    Do While Len(CStr(outWs.Cells(r, baseCol + 1).Value)) > 0
-
-        sheetName = CStr(outWs.Cells(r, baseCol + 1).Value)      ' SheetName列
-        replaceName = CStr(outWs.Cells(r, baseCol + 2).Value)    ' Replace列
-        newComment = CStr(outWs.Cells(r, baseCol + 4).Value)     ' Comment列
-
-        Set ws = Nothing
-        Set ws = GetWorksheetByName(wb, sheetName)
-
-        If Not ws Is Nothing Then
-
-            ' --- シート名変更 ---
-            If Len(replaceName) > 0 Then
-                If ws.name <> replaceName Then
-                    ws.name = replaceName
-
-                    ' 一覧側も更新
-                    outWs.Cells(r, baseCol + 1).Value = replaceName
-                    outWs.Cells(r, baseCol + 3).Value = "L[" & replaceName & "]"
-
-                    sheetName = replaceName
-                End If
-            End If
-
-            ' --- Comment変更 ---
-            If GetSheetProperty(ws, "SheetComment") <> newComment Then
-                SetSheetProperty ws, "SheetComment", newComment
-            End If
-
-        End If
-
-        r = r + 1
-
-    Loop
-
-    Application.ScreenUpdating = True
-
-    MsgBox "ReplaceNameAndCmt 完了", vbInformation
-    Exit Sub
-
-ERR_HANDLER:
-    Application.ScreenUpdating = True
-    MsgBox "ReplaceNameAndCmt failed: " & Err.Description, vbExclamation
-
-End Sub
-
-
-Private Function GetWorksheetByName( _
-    ByVal wb As Workbook, _
-    ByVal sheetName As String _
-) As Worksheet
-
-    On Error GoTo ERR_HANDLER
-    Set GetWorksheetByName = wb.Worksheets(sheetName)
-    Exit Function
-
-ERR_HANDLER:
-    Set GetWorksheetByName = Nothing
-
-End Function
-
-' [DEF] [シート管理] シート名一覧を出力
-Public Sub outputSheetList(ByVal headerRangeText As String)
-
-    Dim outWs As Worksheet
-    Dim headerCell As Range
-    Dim wb As Workbook
-    Dim ws As Worksheet
-
-    Dim startRow As Long
-    Dim startCol As Long
-    Dim outRow As Long
-    Dim no As Long
-    Dim clearLastRow As Long
-
-    On Error GoTo ERR_HANDLER
-
-    Set wb = ActiveWorkbook
-    Set outWs = ActiveSheet
-    Set headerCell = outWs.Range(headerRangeText)
-
-    startRow = headerCell.row + 1
-    startCol = headerCell.Column
-
-    ' ヘッダ出力
-    outWs.Cells(headerCell.row, startCol).Value = "No"
-    outWs.Cells(headerCell.row, startCol + 1).Value = "SheetName"
-    outWs.Cells(headerCell.row, startCol + 2).Value = "Replace"
-    outWs.Cells(headerCell.row, startCol + 3).Value = "L[]"
-    outWs.Cells(headerCell.row, startCol + 4).Value = "SheetComment"
-
-    ' 初期化：ヘッダ以下の連続した値だけクリア
-    clearLastRow = GetListLastRow(outWs, startRow, startCol, 5)
-
-    If clearLastRow >= startRow Then
-        outWs.Range(outWs.Cells(startRow, startCol), _
-                    outWs.Cells(clearLastRow, startCol + 4)).ClearContents
+' WS上のタグ指定をRegExpパターンへ変換
+' 例:
+'   TAG        -> TAG\[[^\]]*\]
+'   TAG.*      -> TAG(\.[^.[]+)*\[[^\]]*\]
+'   TAG.完了   -> TAG\.完了\[[^\]]*\]
+'   TAG.完了.* -> TAG\.完了(\.[^.[]+)*\[[^\]]*\]
+Public Function BuildTagPattern(ByVal tagSpec As String) As String
+
+    Dim s As String
+    Dim hasWildcard As Boolean
+
+    s = Trim$(tagSpec)
+
+    hasWildcard = (Right$(s, 2) = ".*")
+
+    If hasWildcard Then
+        s = Left$(s, Len(s) - 2)
     End If
 
-    outRow = startRow
-    no = 1
+    s = EscapeRegExp(s)
 
-    For Each ws In wb.Worksheets
-
-        outWs.Cells(outRow, startCol).Value = no
-        outWs.Cells(outRow, startCol + 1).Value = ws.name
-
-        ' Replace列は今回の処理では空欄
-        outWs.Cells(outRow, startCol + 2).Value = ""
-
-        outWs.Cells(outRow, startCol + 3).Value = "L[" & ws.name & "]"
-        outWs.Cells(outRow, startCol + 4).Value = GetSheetProperty(ws, "SheetComment")
-        
-        outRow = outRow + 1
-        no = no + 1
-
-    Next ws
-
-    Exit Sub
-
-ERR_HANDLER:
-    MsgBox "outputSheetList failed: " & Err.Description, vbExclamation
-
-End Sub
-
-
-' [DEF]　汎用　シートプロパティ取得
-Public Function GetSheetProperty( _
-    ByVal ws As Worksheet, _
-    ByVal propName As String, _
-    Optional ByVal defaultValue As String = "" _
-) As String
-
-    Dim p As CustomProperty
-
-    For Each p In ws.CustomProperties
-        If p.name = propName Then
-            GetSheetProperty = CStr(p.Value)
-            Exit Function
-        End If
-    Next p
-
-    GetSheetProperty = defaultValue
+    If hasWildcard Then
+        BuildTagPattern = s & "(\.[^.[]+)*\[[^\]]*\]"
+    Else
+        BuildTagPattern = s & "\[[^\]]*\]"
+    End If
 
 End Function
 
-' [DEF]　汎用　シートプロパティ変更
-Public Sub SetSheetProperty( _
-    ByVal ws As Worksheet, _
-    ByVal propName As String, _
-    ByVal propValue As String _
-)
+' Find用の先頭タグを取得
+' 例: TAG.完了.* -> TAG
+Public Function GetTagFindKey(ByVal tagSpec As String) As String
 
-    Dim p As CustomProperty
+    Dim p As Long
 
-    ' 既存があれば更新
-    For Each p In ws.CustomProperties
-        If p.name = propName Then
-            p.Value = propValue
-            Exit Sub
-        End If
-    Next p
+    p = InStr(tagSpec, ".")
 
-    ' なければ追加
-    ws.CustomProperties.Add _
-        name:=propName, _
-        Value:=propValue
-
-End Sub
-
-' [DEF]　汎用　リスト最終位置を出力
-Private Function GetListLastRow( _
-    ByVal ws As Worksheet, _
-    ByVal startRow As Long, _
-    ByVal startCol As Long, _
-    ByVal colCount As Long _
-) As Long
-
-    Dim r As Long
-    Dim c As Long
-    Dim lastUsedRow As Long
-    Dim hasValue As Boolean
-
-    If WorksheetFunction.CountA(ws.Cells) = 0 Then
-        GetListLastRow = startRow - 1
-        Exit Function
+    If p > 0 Then
+        GetTagFindKey = Left$(tagSpec, p - 1)
+    Else
+        GetTagFindKey = tagSpec
     End If
 
-    lastUsedRow = ws.UsedRange.row + ws.UsedRange.Rows.Count - 1
+End Function
 
-    For r = startRow To lastUsedRow
+Public Function EscapeRegExp(ByVal text As String) As String
 
-        hasValue = False
+    Dim s As String
 
-        For c = startCol To startCol + colCount - 1
-            If Len(CStr(ws.Cells(r, c).Value)) > 0 Then
-                hasValue = True
-                Exit For
-            End If
-        Next c
+    s = text
 
-        If Not hasValue Then
-            GetListLastRow = r - 1
-            Exit Function
-        End If
+    s = Replace(s, "\", "\\")
+    s = Replace(s, ".", "\.")
+    s = Replace(s, "+", "\+")
+    s = Replace(s, "?", "\?")
+    s = Replace(s, "^", "\^")
+    s = Replace(s, "$", "\$")
+    s = Replace(s, "(", "\(")
+    s = Replace(s, ")", "\)")
+    s = Replace(s, "{", "\{")
+    s = Replace(s, "}", "\}")
+    s = Replace(s, "|", "\|")
+    s = Replace(s, "[", "\[")
+    s = Replace(s, "]", "\]")
 
-    Next r
-
-    GetListLastRow = lastUsedRow
+    EscapeRegExp = s
 
 End Function
 
