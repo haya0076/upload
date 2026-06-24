@@ -1,368 +1,374 @@
 Option Explicit
 
+' [IN] アドレス    階層        関数名  呼び出し関数    コード
+' [OUT] 階層 | コード | アドレス | 関数名 | 呼び出し関数
+'
+'M[BuildNestedCodeJp](MainProcess@@$A$1:$F$1@@$I$1:$M$1)
+'MainProcess
+'$A$1:$F$1
+'$I$1:$M$1
 
-' リスト作成 ネスト対応
-Public Sub getTagList( _
-    ByVal tagId As String, _
+' [DEF] Basコード ネスト展開 日本語ヘッダ版
+Public Sub BuildNestedCodeJp( _
+    ByVal entryPoint As String, _
+    ByVal baseHeaderRangeText As String, _
     ByVal outputHeaderRangeText As String _
 )
 
+    Dim baseWs As Worksheet
     Dim outWs As Worksheet
+    Dim baseHeader As Range
     Dim outHeader As Range
-    Dim ws As Worksheet
-    Dim targetRange As Range
-    Dim c As Range
-    Dim regEx As Object
-    Dim matches As Object
-    Dim m As Object
+
+    Dim baseCols As Object
+    Dim outCols As Object
+    Dim funcMap As Object
+    Dim callStack As Object
+
     Dim outRow As Long
-    Dim outCol As Long
-    Dim firstAddress  As String
-    Dim checkValue As String
-    Dim rng As Range
-    
+    Dim clearLastRow As Long
+
     On Error GoTo ERR_HANDLER
 
+    Set baseWs = ActiveSheet
     Set outWs = ActiveSheet
+
+    Set baseHeader = baseWs.Range(baseHeaderRangeText)
     Set outHeader = outWs.Range(outputHeaderRangeText)
 
+    Set baseCols = GetHeaderMap(baseWs, baseHeader.row, baseHeader.Column)
+    Set outCols = GetHeaderMap(outWs, outHeader.row, outHeader.Column)
+
+    If Not CheckBaseHeaders(baseCols) Then
+        MsgBox "ベースシートのヘッダが不足しています。", vbExclamation
+        Exit Sub
+    End If
+
+    If Not CheckOutputHeaders(outCols) Then
+        MsgBox "出力シートのヘッダが不足しています。", vbExclamation
+        Exit Sub
+    End If
+
+    Set funcMap = BuildFunctionMap(baseWs, baseCols, baseHeader.row + 1)
+
+    If Not funcMap.Exists(entryPoint) Then
+        MsgBox "エントリー関数が見つかりません: " & entryPoint, vbExclamation
+        Exit Sub
+    End If
+
     outRow = outHeader.row + 1
-    outCol = outHeader.Column
 
-    Dim clearLastRow As Long
-    
-    Dim searchTag As String
-    Dim patternText As String
-    
-    searchTag = GetTagFindKey(tagId)
-    patternText = BuildTagPattern(tagId)
+    clearLastRow = GetListLastRow(outWs, outRow, outHeader.Column, 4)
 
-    ' 現在の出力をクリア
-    clearLastRow = GetListLastRow(outWs, outRow, outCol, 2)
-    
     If clearLastRow >= outRow Then
-        outWs.Range(outWs.Cells(outRow, outCol), _
-                    outWs.Cells(clearLastRow, outCol + 1)).ClearContents
+        outWs.Range(outWs.Cells(outRow, outHeader.Column), _
+                    outWs.Cells(clearLastRow, outHeader.Column + 3)).ClearContents
     End If
 
-    ' REGXパターン登録
-    Set regEx = CreateObject("VBScript.RegExp")
-    With regEx
-        .pattern = patternText
-        .Global = True
-        .IgnoreCase = False
-    End With
-
-For Each ws In ActiveWorkbook.Worksheets
-
-    If ws.name <> outWs.name Then
-
-        Set rng = ws.UsedRange
-        
-        Set c = rng.Find( _
-            What:=searchTag, _
-            LookIn:=xlValues, _
-            LookAt:=xlPart, _
-            SearchOrder:=xlByRows, _
-            SearchDirection:=xlNext, _
-            MatchCase:=False _
-        )
-
-        If Not c Is Nothing Then
-
-            firstAddress = c.Address(External:=True)
-
-            Do
-                checkValue = CStr(c.Value2)
-
-                If regEx.test(checkValue) Then
-
-                    Set matches = regEx.Execute(checkValue)
-
-                    For Each m In matches
-
-                        outWs.Hyperlinks.Add _
-                            Anchor:=outWs.Cells(outRow, outCol), _
-                            Address:="", _
-                            SubAddress:="'" & ws.name & "'!" & c.Address(False, False), _
-                            TextToDisplay:=ws.name
-
-                        outWs.Cells(outRow, outCol + 1).Value = CStr(m.Value)
-
-                        outRow = outRow + 1
-
-                    Next m
-
-                End If
-
-                Set c = rng.FindNext(c)
-
-                If c Is Nothing Then Exit Do
-                If c.Address(External:=True) = firstAddress Then Exit Do
-
-            Loop
-
-        End If
-
-    End If
-
-Next ws
-
-Exit Sub
-
-ERR_HANDLER:
-    MsgBox "getTagList failed: " & Err.Description, vbExclamation
-
-        
-End Sub
-
-
-' TAGリプレイス単体　ショートカットキーからの使用を想定
-' 対象：TAG[]形式、セル完全一致、ネストタグ可
-Public Sub editActiveTagAndReplaceAll()
-
-    Dim srcCell As Range
-    Dim beforeText As String
-    Dim afterText As String
-    Dim tagId As String
-
-    Dim ws As Worksheet
-    Dim c As Range
-    Dim targetRange As Range
-    Dim replaceCount As Long
-    Dim firstAddress As String
-
-    On Error GoTo ERR_HANDLER
-
-    Set srcCell = ActiveCell
-    beforeText = CStr(srcCell.Value)
-
-    If Len(beforeText) = 0 Then
-        MsgBox "アクティブセルが空です。", vbExclamation
-        Exit Sub
-    End If
-
-    If Not IsTagFormat(beforeText) Then
-        MsgBox "タグ形式ではありません。" & vbCrLf & _
-               "想定形式: TAG[内容]", vbExclamation
-        Exit Sub
-    End If
-
-    tagId = GetTagId(beforeText)
-
-    afterText = InputBox( _
-        Prompt:="タグを変更してください。" & vbCrLf & _
-                "現在値: " & beforeText, _
-        Title:="タグ変更: " & tagId, _
-        Default:=beforeText _
-    )
-
-    ' キャンセル、または空欄は中止
-    If afterText = "" Then
-        Exit Sub
-    End If
-
-    If afterText = beforeText Then
-        Exit Sub
-    End If
-
-    If Not IsTagFormat(afterText) Then
-        MsgBox "変更後の値がタグ形式ではありません。" & vbCrLf & _
-               "想定形式: TAG[内容]", vbExclamation
-        Exit Sub
-    End If
-
-
-'    If GetTagId(afterText) <> tagId Then
-'        MsgBox "タグ名は変更しない想定です。" & vbCrLf & _
-'               "変更前: " & tagId & vbCrLf & _
-'               "変更後: " & GetTagId(afterText), vbExclamation
-'        Exit Sub
-'    End If
-'
+    Set callStack = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
 
-    For Each ws In ActiveWorkbook.Worksheets
-
-        Set targetRange = ws.UsedRange
-
-        Set c = targetRange.Find( _
-            What:=beforeText, _
-            LookIn:=xlValues, _
-            LookAt:=xlWhole, _
-            SearchOrder:=xlByRows, _
-            SearchDirection:=xlNext, _
-            MatchCase:=False _
-        )
-
-        If c Is Nothing Then GoTo lblNext
-        firstAddress = c.Address(External:=True)
-
-        Do
-    
-            If beforeText <> afterText Then
-                c.Value = afterText
-                replaceCount = replaceCount + 1
-            End If
-
-            Set c = targetRange.FindNext(c)
-            
-            If c Is Nothing Then Exit Do
-            If c.Address(External:=True) = firstAddress Then Exit Do
-
-        Loop
+' 呼び出し元
+    ExpandFunctionJp _
+        baseWs:=baseWs, _
+        outWs:=outWs, _
+        baseCols:=baseCols, _
+        outCols:=outCols, _
+        funcMap:=funcMap, _
+        funcName:=entryPoint, _
+        outRow:=outRow, _
+        callStack:=callStack, _
+        depth:=1
         
-lblNext:
-    Next ws
-
     Application.ScreenUpdating = True
 
-    MsgBox "置換完了: " & replaceCount & " セル", vbInformation
+    MsgBox "BuildNestedCodeJp 完了", vbInformation
     Exit Sub
 
 ERR_HANDLER:
     Application.ScreenUpdating = True
-    MsgBox "editActiveTagAndReplaceAll failed: " & Err.Description, vbExclamation
+    MsgBox "BuildNestedCodeJp failed: " & Err.Description, vbExclamation
 
 End Sub
 
-Public Function fRetCellAddress(rng As Range) As String
+' [DEF] 関数MAP作成
+Private Function BuildFunctionMap( _
+    ByVal ws As Worksheet, _
+    ByVal cols As Object, _
+    ByVal startRow As Long _
+) As Object
 
-    fRetCellAddress = rng.Address
+    Dim dic As Object
+    Dim r As Long
+    Dim lastRow As Long
+    Dim funcName As String
+    Dim startFuncRow As Long
+    Dim endFuncRow As Long
+
+    Set dic = CreateObject("Scripting.Dictionary")
+
+    lastRow = ws.Cells(ws.rows.Count, cols("コード")).End(xlUp).row
+
+    For r = startRow To lastRow
+
+        funcName = Trim$(CStr(ws.Cells(r, cols("関数名")).Value))
+
+        If Len(funcName) > 0 Then
+
+            startFuncRow = r
+            endFuncRow = FindEndRowByLevel(ws, cols, startFuncRow, lastRow)
+
+            If endFuncRow > 0 Then
+                If Not dic.Exists(funcName) Then
+                    dic.Add funcName, Array(startFuncRow, endFuncRow)
+                End If
+            End If
+
+        End If
+
+    Next r
+
+    Set BuildFunctionMap = dic
 
 End Function
 
-
-Private Function IsTagFormat(ByVal text As String) As Boolean
-
-    Dim regEx As Object
-
-    Set regEx = CreateObject("VBScript.RegExp")
-
-    With regEx
-        .pattern = "^[^\[\]]+\[[^\]]*\]$"
-        .Global = False
-        .IgnoreCase = False
-    End With
-
-    IsTagFormat = regEx.test(text)
-
-End Function
-
-Private Function GetTagId(ByVal tagText As String) As String
-
-    Dim p As Long
-
-    p = InStr(1, tagText, "[", vbBinaryCompare)
-
-    If p > 1 Then
-        GetTagId = Left$(tagText, p - 1)
-    Else
-        GetTagId = ""
-    End If
-
-End Function
-
-Public Sub replaceTagList( _
-    ByVal tagId As String, _
-    ByVal headerRangeText As String _
+' [DEF] 関数展開
+Private Sub ExpandFunctionJp( _
+    ByVal baseWs As Worksheet, _
+    ByVal outWs As Worksheet, _
+    ByVal baseCols As Object, _
+    ByVal outCols As Object, _
+    ByVal funcMap As Object, _
+    ByVal funcName As String, _
+    ByRef outRow As Long, _
+    ByVal callStack As Object, _
+    ByVal depth As Long _
 )
 
-    Dim listWs As Worksheet
-    Dim headerCell As Range
+    Dim rows As Variant
+    Dim startRow As Long
+    Dim endRow As Long
     Dim r As Long
-    Dim baseCol As Long
 
-    Dim linkCell As Range
-    Dim beforeText As String
-    Dim afterText As String
+    Dim callText As String
+    Dim calls As Variant
+    Dim i As Long
+    Dim callFunc As String
 
-    Dim targetWs As Worksheet
-    Dim targetAddress As String
-    Dim targetCell As Range
+    If callStack.Exists(funcName) Then
+        WriteWarnRow outWs, outCols, outRow, "' [SKIP] recursive call: " & funcName, depth
+        outRow = outRow + 1
+        Exit Sub
+    End If
 
-    Dim h As Hyperlink
+    callStack.Add funcName, True
 
-    On Error GoTo ERR_HANDLER
+    rows = funcMap(funcName)
+    startRow = CLng(rows(0))
+    endRow = CLng(rows(1))
 
-    Set listWs = ActiveSheet
-    Set headerCell = listWs.Range(headerRangeText)
+    For r = startRow To endRow
 
-    r = headerCell.row + 1
-    baseCol = headerCell.Column
+        CopyNestedRow baseWs, outWs, baseCols, outCols, r, outRow, depth
+        outRow = outRow + 1
 
-    Do While listWs.Cells(r, baseCol).Value <> ""
+        callText = Trim$(CStr(baseWs.Cells(r, baseCols("呼び出し関数")).Value))
 
-        Set linkCell = listWs.Cells(r, baseCol)
+        If Len(callText) > 0 Then
 
-        beforeText = CStr(listWs.Cells(r, baseCol + 1).Value)
-        afterText = CStr(listWs.Cells(r, baseCol + 2).Value)
+            calls = SplitCallFunctions(callText)
 
-        ' 移行後が空欄でない場合のみ処理
-        If Len(afterText) > 0 Then
+            For i = LBound(calls) To UBound(calls)
 
-            If linkCell.Hyperlinks.Count > 0 Then
+                callFunc = Trim$(CStr(calls(i)))
 
-                Set h = linkCell.Hyperlinks(1)
+                If Len(callFunc) > 0 Then
 
-                Set targetCell = GetCellFromSubAddress(h.SubAddress)
+                    ' 自分自身への代入は呼び出しではないので無視
+                    If callFunc <> funcName Then
 
-                If Not targetCell Is Nothing Then
-                    ' ハイパーリンク先セルの値を置換
-                    targetCell.Value = Replace(CStr(targetCell.Value), beforeText, afterText)
+                        If funcMap.Exists(callFunc) Then
+                            ExpandFunctionJp _
+                            baseWs:=baseWs, _
+                            outWs:=outWs, _
+                            baseCols:=baseCols, _
+                            outCols:=outCols, _
+                            funcMap:=funcMap, _
+                            funcName:=callFunc, _
+                            outRow:=outRow, _
+                            callStack:=callStack, _
+                            depth:=depth + 1
+                        Else
+                            WriteWarnRow outWs, outCols, outRow, "' [WARN] Function not found: " & callFunc, depth + 1
+                            outRow = outRow + 1
+                        End If
+
+                    End If
+
                 End If
+
+            Next i
+
+        End If
+
+    Next r
+
+    callStack.Remove funcName
+
+End Sub
+
+' [DEF] 階層1のEnd行検索
+Private Function FindEndRowByLevel( _
+    ByVal ws As Worksheet, _
+    ByVal cols As Object, _
+    ByVal startRow As Long, _
+    ByVal lastRow As Long _
+) As Long
+
+    Dim r As Long
+    Dim levelValue As String
+    Dim codeText As String
+
+    For r = startRow + 1 To lastRow
+
+        levelValue = Trim$(CStr(ws.Cells(r, cols("階層")).Value))
+        codeText = Trim$(CStr(ws.Cells(r, cols("コード")).Value))
+
+        If levelValue = "1" Then
+
+            If LCase$(codeText) = "end sub" _
+                Or LCase$(codeText) = "end function" _
+                Or InStr(1, LCase$(codeText), "end sub", vbTextCompare) > 0 _
+                Or InStr(1, LCase$(codeText), "end function", vbTextCompare) > 0 Then
+
+                FindEndRowByLevel = r
+                Exit Function
 
             End If
 
         End If
 
-        r = r + 1
+    Next r
 
-    Loop
-
-    MsgBox ("タグ置換完了")
-
-    Exit Sub
-
-ERR_HANDLER:
-    MsgBox "replaceTagList failed: " & Err.Description, vbExclamation
-
-End Sub
-
-Private Function GetCellFromSubAddress(ByVal subAddressText As String) As Range
-
-    Dim sheetName As String
-    Dim cellAddress As String
-    Dim pos As Long
-
-    On Error GoTo ERR_HANDLER
-
-    pos = InStr(1, subAddressText, "!", vbTextCompare)
-
-    If pos = 0 Then
-        Set GetCellFromSubAddress = Nothing
-        Exit Function
-    End If
-
-    sheetName = Left$(subAddressText, pos - 1)
-    cellAddress = Mid$(subAddressText, pos + 1)
-
-    ' 'Sheet Name'!A1 のクォート除去
-    If Left$(sheetName, 1) = "'" And Right$(sheetName, 1) = "'" Then
-        sheetName = Mid$(sheetName, 2, Len(sheetName) - 2)
-        sheetName = Replace(sheetName, "''", "'")
-    End If
-
-    Set GetCellFromSubAddress = ActiveWorkbook.Worksheets(sheetName).Range(cellAddress)
-
-    Exit Function
-
-ERR_HANDLER:
-    Set GetCellFromSubAddress = Nothing
+    FindEndRowByLevel = 0
 
 End Function
 
+' [DEF] 出力行コピー
+Private Sub CopyNestedRow( _
+    ByVal baseWs As Worksheet, _
+    ByVal outWs As Worksheet, _
+    ByVal baseCols As Object, _
+    ByVal outCols As Object, _
+    ByVal srcRow As Long, _
+    ByVal dstRow As Long, _
+    ByVal depth As Long _
+)
+
+    Dim codeText As String
+
+    codeText = CStr(baseWs.Cells(srcRow, baseCols("コード")).Value)
+
+    outWs.Cells(dstRow, outCols("階層")).Value = depth
+
+    outWs.Cells(dstRow, outCols("コード")).Value = _
+        String(depth * 4, " ") & LTrim$(codeText)
+
+    outWs.Cells(dstRow, outCols("アドレス")).Value = _
+        baseWs.Cells(srcRow, baseCols("アドレス")).Value
+
+    outWs.Cells(dstRow, outCols("関数名")).Value = _
+        baseWs.Cells(srcRow, baseCols("関数名")).Value
+
+    outWs.Cells(dstRow, outCols("呼び出し関数")).Value = _
+        baseWs.Cells(srcRow, baseCols("呼び出し関数")).Value
+
+End Sub
+
+' [DEF] 警告行出力
+Private Sub WriteWarnRow( _
+    ByVal outWs As Worksheet, _
+    ByVal outCols As Object, _
+    ByVal outRow As Long, _
+    ByVal message As String, _
+    ByVal depth As Long _
+)
+
+    outWs.Cells(outRow, outCols("階層")).Value = depth
+    outWs.Cells(outRow, outCols("コード")).Value = _
+        String(depth * 4, " ") & message
+
+End Sub
+
+' [DEF] 呼び出し関数分割
+Private Function SplitCallFunctions(ByVal callText As String) As Variant
+
+    callText = Replace(callText, "，", ",")
+    callText = Replace(callText, "、", ",")
+    callText = Replace(callText, "|", ",")
+
+    SplitCallFunctions = Split(callText, ",")
+
+End Function
+
+' [DEF] ヘッダMAP作成
+Private Function GetHeaderMap( _
+    ByVal ws As Worksheet, _
+    ByVal headerRow As Long, _
+    ByVal startCol As Long _
+) As Object
+
+    Dim dic As Object
+    Dim c As Long
+    Dim lastCol As Long
+    Dim headerName As String
+
+    Set dic = CreateObject("Scripting.Dictionary")
+
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = startCol To lastCol
+
+        headerName = Trim$(CStr(ws.Cells(headerRow, c).Value))
+
+        If Len(headerName) > 0 Then
+            If Not dic.Exists(headerName) Then
+                dic.Add headerName, c
+            End If
+        End If
+
+    Next c
+
+    Set GetHeaderMap = dic
+
+End Function
+
+' [DEF] ベースヘッダ確認
+Private Function CheckBaseHeaders(ByVal cols As Object) As Boolean
+
+    CheckBaseHeaders = _
+        cols.Exists("アドレス") _
+        And cols.Exists("階層") _
+        And cols.Exists("関数名") _
+        And cols.Exists("呼び出し関数") _
+        And cols.Exists("コード")
+
+End Function
+
+' [DEF] 出力ヘッダ確認
+Private Function CheckOutputHeaders(ByVal cols As Object) As Boolean
+
+    CheckOutputHeaders = _
+        cols.Exists("階層") _
+        And cols.Exists("コード") _
+        And cols.Exists("アドレス") _
+        And cols.Exists("関数名") _
+        And cols.Exists("呼び出し関数")
+
+End Function
+
+' [DEF] ヘッダ下の連続表最終行
 Private Function GetListLastRow( _
     ByVal ws As Worksheet, _
     ByVal startRow As Long, _
@@ -373,12 +379,17 @@ Private Function GetListLastRow( _
     Dim r As Long
     Dim c As Long
     Dim lastUsedRow As Long
+    Dim hasValue As Boolean
 
-    lastUsedRow = ws.UsedRange.row + ws.UsedRange.Rows.Count - 1
+    If WorksheetFunction.CountA(ws.Cells) = 0 Then
+        GetListLastRow = startRow - 1
+        Exit Function
+    End If
+
+    lastUsedRow = ws.UsedRange.row + ws.UsedRange.rows.Count - 1
 
     For r = startRow To lastUsedRow
 
-        Dim hasValue As Boolean
         hasValue = False
 
         For c = startCol To startCol + colCount - 1
@@ -396,75 +407,6 @@ Private Function GetListLastRow( _
     Next r
 
     GetListLastRow = lastUsedRow
-
-End Function
-
-' WS上のタグ指定をRegExpパターンへ変換
-' 例:
-'   TAG        -> TAG\[[^\]]*\]
-'   TAG.*      -> TAG(\.[^.[]+)*\[[^\]]*\]
-'   TAG.完了   -> TAG\.完了\[[^\]]*\]
-'   TAG.完了.* -> TAG\.完了(\.[^.[]+)*\[[^\]]*\]
-Public Function BuildTagPattern(ByVal tagSpec As String) As String
-
-    Dim s As String
-    Dim hasWildcard As Boolean
-
-    s = Trim$(tagSpec)
-
-    hasWildcard = (Right$(s, 2) = ".*")
-
-    If hasWildcard Then
-        s = Left$(s, Len(s) - 2)
-    End If
-
-    s = EscapeRegExp(s)
-
-    If hasWildcard Then
-        BuildTagPattern = s & "(\.[^.[]+)*\[[^\]]*\]"
-    Else
-        BuildTagPattern = s & "\[[^\]]*\]"
-    End If
-
-End Function
-
-' Find用の先頭タグを取得
-' 例: TAG.完了.* -> TAG
-Public Function GetTagFindKey(ByVal tagSpec As String) As String
-
-    Dim p As Long
-
-    p = InStr(tagSpec, ".")
-
-    If p > 0 Then
-        GetTagFindKey = Left$(tagSpec, p - 1)
-    Else
-        GetTagFindKey = tagSpec
-    End If
-
-End Function
-
-Public Function EscapeRegExp(ByVal text As String) As String
-
-    Dim s As String
-
-    s = text
-
-    s = Replace(s, "\", "\\")
-    s = Replace(s, ".", "\.")
-    s = Replace(s, "+", "\+")
-    s = Replace(s, "?", "\?")
-    s = Replace(s, "^", "\^")
-    s = Replace(s, "$", "\$")
-    s = Replace(s, "(", "\(")
-    s = Replace(s, ")", "\)")
-    s = Replace(s, "{", "\{")
-    s = Replace(s, "}", "\}")
-    s = Replace(s, "|", "\|")
-    s = Replace(s, "[", "\[")
-    s = Replace(s, "]", "\]")
-
-    EscapeRegExp = s
 
 End Function
 
