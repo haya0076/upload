@@ -1,0 +1,23 @@
+Public Const TRACE_MODE As Boolean = True
+
+Public Sub TraceStart(ByVal procName As String)
+    If Not TRACE_MODE Then Exit Sub
+    Debug.Print Format(Now, "yyyy/mm/dd hh:nn:ss") & " [START] " & procName
+End Sub
+
+Public Sub TraceEnd(ByVal procName As String)
+    If Not TRACE_MODE Then Exit Sub
+    Debug.Print Format(Now, "yyyy/mm/dd hh:nn:ss") & " [END]   " & procName
+End Sub
+
+Public Sub TraceInfo(ByVal label As String, Optional ByVal value As Variant = "")
+    If Not TRACE_MODE Then Exit Sub
+    Debug.Print Format(Now, "yyyy/mm/dd hh:nn:ss") & " [INFO]  " & label & " = " & CStr(value)
+End Sub
+
+Public Sub TraceError(ByVal procName As String, ByVal errNo As Long, ByVal errDesc As String)
+    If Not TRACE_MODE Then Exit Sub
+    Debug.Print Format(Now, "yyyy/mm/dd hh:nn:ss") & " [ERROR] " & procName & _
+                " / " & errNo & " / " & errDesc
+End Sub
+
