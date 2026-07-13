@@ -8,9 +8,11 @@ Public Const RNG_SHT_NAME = "MAIN"
 Public Const SHT_NAME_COMPARE As String = "比較一覧"
 
 Public Const ROW_COMPARE_START As Long = 2
-Public Const COL_COMPARE_TABLE As Long = 1
-Public Const COL_COMPARE_FIELD As Long = 2
+Public Const COL_COMPARE_TABLE As Long = 3
+Public Const COL_COMPARE_FIELD As Long = 5
+Public Const folderpath = "C:\SAPデータ項目比較一覧"
 
+' 出力シート
 Public Const SHT_NAME_OUTPUT_LIST As String = "OUT_一覧"
 
 
@@ -64,7 +66,16 @@ Public Sub Main()
     '=========================================
     Call ProcessTransferFolder(pathInIsou, definitionBooks)
     
-
+    
+    '=========================================
+    ' 項目比較一覧から情報を転記
+    '=========================================
+    Call FillInfo( _
+            definitionBooks, _
+            ThisWorkbook.Worksheets(SHT_NAME_OUTPUT_LIST))
+        
+        
+        
     MsgBox "処理が完了しました。", vbInformation
 
 
@@ -133,17 +144,17 @@ Private Function ValidateFolderExists(ByVal items As Variant) As String
 
     Dim i As Long
     Dim label As String
-    Dim folderPath As String
+    Dim folderpath As String
     Dim message As String
 
     For i = LBound(items) To UBound(items)
         label = CStr(items(i)(0))
-        folderPath = Trim(CStr(items(i)(1)))
+        folderpath = Trim(CStr(items(i)(1)))
 
-        If folderPath <> "" Then
-            If Not fso.FolderExists(folderPath) Then
+        If folderpath <> "" Then
+            If Not fso.FolderExists(folderpath) Then
                 message = message & "・" & label & " が存在しません：" & vbCrLf
-                message = message & "  " & folderPath & vbCrLf
+                message = message & "  " & folderpath & vbCrLf
             End If
         End If
     Next i
@@ -152,7 +163,7 @@ Private Function ValidateFolderExists(ByVal items As Variant) As String
 
 End Function
 
-Public Function OpenDefinitionBooks(ByVal folderPath As String) As Collection
+Public Function OpenDefinitionBooks(ByVal folderpath As String) As Collection
 
     On Error GoTo lblError
 
@@ -167,7 +178,7 @@ Public Function OpenDefinitionBooks(ByVal folderPath As String) As Collection
     Dim objFolder As Object
     Dim objFile As Object
 
-    Set objFolder = fso.GetFolder(folderPath)
+    Set objFolder = fso.GetFolder(folderpath)
 
     For Each objFile In objFolder.Files
 
@@ -200,7 +211,7 @@ lblError:
 End Function
 
 Public Sub ProcessTransferFolder( _
-    ByVal folderPath As String, _
+    ByVal folderpath As String, _
     ByVal definitionBooks As Collection _
 )
 
@@ -214,7 +225,7 @@ Public Sub ProcessTransferFolder( _
     Dim objFolder As Object
     Dim objFile As Object
 
-    Set objFolder = fso.GetFolder(folderPath)
+    Set objFolder = fso.GetFolder(folderpath)
 
     For Each objFile In objFolder.Files
 
@@ -369,8 +380,6 @@ Private Function CreateOutputSheetForTransfer(ByVal sourceBookName As String) As
     ws.Range("A1").value = "元行番号"
     ws.Range("B1").value = "テーブル名"
     ws.Range("C1").value = "項目名"
-    ws.Range("D1").value = "取得結果"
-    ws.Range("E1").value = "備考"
 
     Set CreateOutputSheetForTransfer = ws
 
@@ -412,8 +421,7 @@ Private Sub WriteTransferDictionary( _
         wsOut.Cells(rowOut, 1).value = item("RowNo")
         wsOut.Cells(rowOut, 2).value = item("TableName")
         wsOut.Cells(rowOut, 3).value = item("FieldName")
-        wsOut.Cells(rowOut, 4).value = "未取得"
-        wsOut.Cells(rowOut, 5).value = CStr(key)
+
 
         rowOut = rowOut + 1
 
@@ -490,5 +498,342 @@ Public Sub CloseDefinitionBooks(ByVal books As Collection)
     Next wb
 
 End Sub
+
+'項目比較一覧から情報を転記
+Private Sub FillInfo( _
+    ByVal definitionBooks As Collection, _
+    ByVal wsOutputList As Worksheet _
+)
+
+    On Error GoTo lblError
+
+    TraceStart "FillInfo"
+
+    Dim fieldDefinitions As Variant
+    fieldDefinitions = GetOutputFieldDefinitions()
+
+    Dim lastListRow As Long
+    lastListRow = wsOutputList.Cells( _
+                        wsOutputList.Rows.Count, 1) _
+                        .End(xlUp).Row
+
+    Dim listRow As Long
+    Dim outputSheetName As String
+    Dim wsOut As Worksheet
+
+    For listRow = 2 To lastListRow
+
+        outputSheetName = Trim$( _
+            CStr(wsOutputList.Cells(listRow, 3).value))
+
+        If outputSheetName <> "" Then
+
+            Set wsOut = GetWorksheetByName( _
+                            ThisWorkbook, _
+                            outputSheetName)
+
+            If wsOut Is Nothing Then
+
+                TraceInfo _
+                    "出力シートなし", _
+                    outputSheetName
+
+            Else
+
+                Call FillOutputSheetInfo( _
+                        wsOut, _
+                        definitionBooks, _
+                        fieldDefinitions)
+
+            End If
+
+        End If
+
+        Set wsOut = Nothing
+
+    Next listRow
+
+lblEnd:
+    TraceEnd "FillInfo"
+    Exit Sub
+
+lblError:
+    TraceError _
+        "FillInfo", _
+        Err.Number, _
+        Err.Description
+
+    Resume lblEnd
+
+End Sub
+
+Private Sub FillInfo( _
+    ByVal definitionBooks As Collection, _
+    ByVal wsOutputList As Worksheet _
+)
+
+    On Error GoTo lblError
+
+    TraceStart "FillInfo"
+
+    Dim fieldDefinitions As Variant
+    fieldDefinitions = GetOutputFieldDefinitions()
+
+    Dim lastListRow As Long
+    lastListRow = wsOutputList.Cells( _
+                        wsOutputList.Rows.Count, 1) _
+                        .End(xlUp).Row
+
+    Dim listRow As Long
+    Dim outputSheetName As String
+    Dim wsOut As Worksheet
+
+    For listRow = 2 To lastListRow
+
+        outputSheetName = Trim$( _
+            CStr(wsOutputList.Cells(listRow, 3).value))
+
+        If outputSheetName <> "" Then
+
+            Set wsOut = GetWorksheetByName( _
+                            ThisWorkbook, _
+                            outputSheetName)
+
+            If wsOut Is Nothing Then
+
+                TraceInfo _
+                    "出力シートなし", _
+                    outputSheetName
+
+            Else
+
+                Call FillOutputSheetInfo( _
+                        wsOut, _
+                        definitionBooks, _
+                        fieldDefinitions)
+
+            End If
+
+        End If
+
+        Set wsOut = Nothing
+
+    Next listRow
+
+lblEnd:
+    TraceEnd "FillInfo"
+    Exit Sub
+
+lblError:
+    TraceError _
+        "FillInfo", _
+        Err.Number, _
+        Err.Description
+
+    Resume lblEnd
+
+End Sub
+
+Private Function GetOutputFieldDefinitions() As Variant
+
+    GetOutputFieldDefinitions = Array( _
+        Array("SAP論理名", "sap論理名", 0), _
+        Array("SAP物理名", "sap物理名", 0), _
+        Array("SAP型", "sap型", 0), _
+        Array("SAP桁数", "sap桁数", 0) _
+    )
+
+End Function
+
+Private Function GetDefinitionWorkbookByPrefix( _
+    ByVal definitionBooks As Collection, _
+    ByVal tableName As String _
+) As Workbook
+
+    On Error GoTo lblError
+
+    Dim prefix As String
+    prefix = LCase$(Left$(Trim$(tableName), 2))
+
+    If Len(prefix) < 2 Then
+        Exit Function
+    End If
+
+    Dim searchText As String
+    searchText = "_" & prefix & "_"
+
+    Dim wb As Workbook
+
+    For Each wb In definitionBooks
+
+        If InStr( _
+            1, _
+            LCase$(wb.Name), _
+            searchText, _
+            vbTextCompare) > 0 Then
+
+            Set GetDefinitionWorkbookByPrefix = wb
+            Exit Function
+
+        End If
+
+    Next wb
+
+    Exit Function
+
+lblError:
+    TraceError _
+        "GetDefinitionWorkbookByPrefix", _
+        Err.Number, _
+        Err.Description
+
+    Set GetDefinitionWorkbookByPrefix = Nothing
+
+End Function
+
+Private Function GetFieldInfo( _
+    ByVal wbDefinition As Workbook, _
+    ByVal sheetName As String, _
+    ByVal physicalName As String, _
+    ByVal fieldType As String, _
+    ByVal shift As Long _
+) As String
+
+    On Error GoTo lblError
+
+    Dim ws As Worksheet
+    Set ws = GetWorksheetByName( _
+                wbDefinition, _
+                sheetName)
+
+    If ws Is Nothing Then
+        GetFieldInfo = "#SHEET_NOT_FOUND"
+        Exit Function
+    End If
+
+    Dim lastCol As Long
+    Dim matchCol As Long
+    Dim colNo As Long
+
+    ' 6行目の物理名から対象列を探す
+    lastCol = ws.Cells(6, ws.Columns.Count) _
+                .End(xlToLeft).Column
+
+    For colNo = 2 To lastCol
+
+        If StrComp( _
+            Trim$(CStr(ws.Cells(6, colNo).value)), _
+            Trim$(physicalName), _
+            vbTextCompare) = 0 Then
+
+            matchCol = colNo
+            Exit For
+
+        End If
+
+    Next colNo
+
+    If matchCol = 0 Then
+        GetFieldInfo = "#FIELD_NOT_FOUND"
+        Exit Function
+    End If
+
+    Dim resultValue As Variant
+
+    Select Case LCase$(fieldType)
+
+        Case "旧論理"
+            resultValue = _
+                ws.Cells(4 + shift, matchCol).value
+
+        Case "旧型"
+            resultValue = _
+                ws.Cells(9 + shift, matchCol).value
+
+        Case "旧db列"
+            resultValue = _
+                ws.Cells(10 + shift, matchCol).value
+
+        Case "旧桁数"
+            resultValue = _
+                ws.Cells(11 + shift, matchCol).value
+
+        Case "旧サンプル"
+            resultValue = _
+                ws.Cells(14 + shift, matchCol).value
+
+        Case "sapテーブル"
+            resultValue = _
+                ws.Cells(115 + shift, matchCol).value
+
+        Case "sap論理名"
+            resultValue = _
+                ws.Cells(116 + shift, matchCol).value
+
+        Case "sap物理名"
+            resultValue = _
+                ws.Cells(117 + shift, matchCol).value
+
+        Case "sap型"
+            resultValue = _
+                ws.Cells(118 + shift, matchCol).value
+
+        Case "sap桁数"
+            resultValue = _
+                ws.Cells(119 + shift, matchCol).value
+
+        Case Else
+            GetFieldInfo = "#INVALID_FIELD_TYPE"
+            Exit Function
+
+    End Select
+
+    If IsError(resultValue) Then
+        GetFieldInfo = CStr(resultValue)
+    Else
+        GetFieldInfo = CStr(resultValue)
+    End If
+
+    Exit Function
+
+lblError:
+    TraceError _
+        "GetFieldInfo", _
+        Err.Number, _
+        Err.Description
+
+    GetFieldInfo = "#ERROR"
+
+End Function
+
+'Private Function GetWorkbookNameFromTableName(tableName As String) As String
+'
+'    ' 内部パラメータ：※現在非正規化 仮固定中
+'    ' ブック名接頭語  => 固定
+'    ' ブックパス      => シート参照
+'
+'    Dim prefix As String
+'    Dim fileprefix As String
+'    Dim folderpath As String
+'
+'    On Error GoTo ErrHandler
+'
+''[修正]　PrefixだけでBookを選択したい
+'    ' 先頭2文字を取得
+'    prefix = Left(tableName, 2)
+'    fileprefix = "%" & prefix & "%"
+'    '===================================
+'
+'    GetWorkbookNameFromTableName = _
+'        GetLatestWorkbookByPrefix(folderpath, fileprefix)
+'
+'    Exit Function
+'
+'ErrHandler:
+'    GetWorkbookNameFromTableName = ""
+'
+'End Function
+'
+
 
 
