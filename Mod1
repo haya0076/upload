@@ -1,412 +1,839 @@
 Option Explicit
+' 移送表シートの設定
+Public Const RNG_PATH_IN_ISOU = "C4"
+Public Const RNG_PATH_IN_HIKAKU = "C5"
+Public Const RNG_SHT_NAME = "MAIN"
 
-' [IN] アドレス    階層        関数名  呼び出し関数    コード
-' [OUT] 階層 | コード | アドレス | 関数名 | 呼び出し関数
-'
-'M[BuildNestedCodeJp](MainProcess@@$A$1:$F$1@@$I$1:$M$1)
-'MainProcess
-'$A$1:$F$1
-'$I$1:$M$1
+' 比較一覧シートの設定
+Public Const SHT_NAME_COMPARE As String = "比較一覧"
 
-' [DEF] Basコード ネスト展開 日本語ヘッダ版
-Public Sub BuildNestedCodeJp( _
-    ByVal entryPoint As String, _
-    ByVal baseHeaderRangeText As String, _
-    ByVal outputHeaderRangeText As String _
-)
+Public Const ROW_COMPARE_START As Long = 2
+Public Const COL_COMPARE_TABLE As Long = 3
+Public Const COL_COMPARE_FIELD As Long = 5
+Public Const folderpath = "C:\SAPデータ項目比較一覧"
 
-    Dim baseWs As Worksheet
-    Dim outWs As Worksheet
-    Dim baseHeader As Range
-    Dim outHeader As Range
+' 出力シートa
+Public Const SHT_NAME_OUTPUT_LIST As String = "OUT_一覧"
 
-    Dim baseCols As Object
-    Dim outCols As Object
-    Dim funcMap As Object
-    Dim callStack As Object
 
-    Dim outRow As Long
-    Dim clearLastRow As Long
+Public Sub execute_main()
 
-    On Error GoTo ERR_HANDLER
+ Call Main
 
-    Set baseWs = ActiveSheet
-    Set outWs = ActiveSheet
+End Sub
 
-    Set baseHeader = baseWs.Range(baseHeaderRangeText)
-    Set outHeader = outWs.Range(outputHeaderRangeText)
+Public Sub Main()
+    On Error GoTo lblError
+    
+    TraceStart "Main"
+    
+    Dim pathInIsou As String
+    Dim pathInHikaku As String
 
-    Set baseCols = GetHeaderMap(baseWs, baseHeader.row, baseHeader.Column)
-    Set outCols = GetHeaderMap(outWs, outHeader.row, outHeader.Column)
 
-    If Not CheckBaseHeaders(baseCols) Then
-        MsgBox "ベースシートのヘッダが不足しています。", vbExclamation
-        Exit Sub
-    End If
-
-    If Not CheckOutputHeaders(outCols) Then
-        MsgBox "出力シートのヘッダが不足しています。", vbExclamation
-        Exit Sub
-    End If
-
-    Set funcMap = BuildFunctionMap(baseWs, baseCols, baseHeader.row + 1)
-
-    If Not funcMap.Exists(entryPoint) Then
-        MsgBox "エントリー関数が見つかりません: " & entryPoint, vbExclamation
-        Exit Sub
-    End If
-
-    outRow = outHeader.row + 1
-
-    clearLastRow = GetListLastRow(outWs, outRow, outHeader.Column, 4)
-
-    If clearLastRow >= outRow Then
-        outWs.Range(outWs.Cells(outRow, outHeader.Column), _
-                    outWs.Cells(clearLastRow, outHeader.Column + 3)).ClearContents
-    End If
-
-    Set callStack = CreateObject("Scripting.Dictionary")
-
-    Application.ScreenUpdating = False
-
-' 呼び出し元
-    ExpandFunctionJp _
-        baseWs:=baseWs, _
-        outWs:=outWs, _
-        baseCols:=baseCols, _
-        outCols:=outCols, _
-        funcMap:=funcMap, _
-        funcName:=entryPoint, _
-        outRow:=outRow, _
-        callStack:=callStack, _
-        depth:=1
+    '=========================================
+    ' 入力情報の取得
+    '=========================================
+    pathInIsou = ThisWorkbook.Worksheets(RNG_SHT_NAME).Range(RNG_PATH_IN_ISOU).value
+    pathInHikaku = ThisWorkbook.Worksheets(RNG_SHT_NAME).Range(RNG_PATH_IN_HIKAKU).value
+    
+    TraceInfo "移送表フォルダ", pathInIsou
+    TraceInfo "比較定義書フォルダ", pathInHikaku
+    
+    
+    '=========================================
+    ' 入力値の妥当性確認
+    '=========================================
+    Dim checkItems As Variant
+    
+    checkItems = Array( _
+        Array("移送表フォルダ", pathInIsou), _
+        Array("比較定義書フォルダ", pathInHikaku) _
+    )
         
-    Application.ScreenUpdating = True
+    If Not ValidateInput(checkItems) Then GoTo lblEnd
+      
+      
+    '=========================================
+    ' 比較一覧を開く
+    '=========================================
+    Dim definitionBooks As Collection
+    Set definitionBooks = OpenDefinitionBooks(pathInHikaku)
+      
+      
+    '=========================================
+    ' 移送表フォルダの走査
+    '=========================================
+    Call ProcessTransferFolder(pathInIsou, definitionBooks)
+    
+    
+    '=========================================
+    ' 項目比較一覧から情報を転記
+    '=========================================
+    Call FillInfo( _
+            definitionBooks, _
+            ThisWorkbook.Worksheets(SHT_NAME_OUTPUT_LIST))
+        
+        
+        
+    MsgBox "処理が完了しました。", vbInformation
 
-    MsgBox "BuildNestedCodeJp 完了", vbInformation
+
+lblEnd:
+    '=========================================
+    ' 終了処理
+    '=========================================
+    If Not definitionBooks Is Nothing Then
+        Call CloseDefinitionBooks(definitionBooks)
+    End If
+    
+    TraceEnd "Main"
     Exit Sub
 
-ERR_HANDLER:
-    Application.ScreenUpdating = True
-    MsgBox "BuildNestedCodeJp failed: " & Err.Description, vbExclamation
+lblError:
+    TraceError "Main", Err.Number, Err.Description
+    MsgBox "不明なエラーが発生しました：" & Err.Description, vbExclamation
+    Resume lblEnd
 
 End Sub
 
-' [DEF] 関数MAP作成
-Private Function BuildFunctionMap( _
-    ByVal ws As Worksheet, _
-    ByVal cols As Object, _
-    ByVal startRow As Long _
-) As Object
+Private Function ValidateInput(ByVal checkItems As Variant) As Boolean
 
-    Dim dic As Object
-    Dim r As Long
-    Dim lastRow As Long
-    Dim funcName As String
-    Dim startFuncRow As Long
-    Dim endFuncRow As Long
+    Dim errMsg As String
 
-    Set dic = CreateObject("Scripting.Dictionary")
-
-    lastRow = ws.Cells(ws.rows.Count, cols("コード")).End(xlUp).row
-
-    For r = startRow To lastRow
-
-        funcName = Trim$(CStr(ws.Cells(r, cols("関数名")).Value))
-
-        If Len(funcName) > 0 Then
-
-            startFuncRow = r
-            endFuncRow = FindEndRowByLevel(ws, cols, startFuncRow, lastRow)
-
-            If endFuncRow > 0 Then
-                If Not dic.Exists(funcName) Then
-                    dic.Add funcName, Array(startFuncRow, endFuncRow)
-                End If
-            End If
-
-        End If
-
-    Next r
-
-    Set BuildFunctionMap = dic
-
-End Function
-
-' [DEF] 関数展開
-Private Sub ExpandFunctionJp( _
-    ByVal baseWs As Worksheet, _
-    ByVal outWs As Worksheet, _
-    ByVal baseCols As Object, _
-    ByVal outCols As Object, _
-    ByVal funcMap As Object, _
-    ByVal funcName As String, _
-    ByRef outRow As Long, _
-    ByVal callStack As Object, _
-    ByVal depth As Long _
-)
-
-    Dim rows As Variant
-    Dim startRow As Long
-    Dim endRow As Long
-    Dim r As Long
-
-    Dim callText As String
-    Dim calls As Variant
-    Dim i As Long
-    Dim callFunc As String
-
-    If callStack.Exists(funcName) Then
-        WriteWarnRow outWs, outCols, outRow, "' [SKIP] recursive call: " & funcName, depth
-        outRow = outRow + 1
-        Exit Sub
-    End If
-
-    callStack.Add funcName, True
-
-    rows = funcMap(funcName)
-    startRow = CLng(rows(0))
-    endRow = CLng(rows(1))
-
-    For r = startRow To endRow
-
-        CopyNestedRow baseWs, outWs, baseCols, outCols, r, outRow, depth
-        outRow = outRow + 1
-
-        callText = Trim$(CStr(baseWs.Cells(r, baseCols("呼び出し関数")).Value))
-
-        If Len(callText) > 0 Then
-
-            calls = SplitCallFunctions(callText)
-
-            For i = LBound(calls) To UBound(calls)
-
-                callFunc = Trim$(CStr(calls(i)))
-
-                If Len(callFunc) > 0 Then
-
-                    ' 自分自身への代入は呼び出しではないので無視
-                    If callFunc <> funcName Then
-
-                        If funcMap.Exists(callFunc) Then
-                            ExpandFunctionJp _
-                            baseWs:=baseWs, _
-                            outWs:=outWs, _
-                            baseCols:=baseCols, _
-                            outCols:=outCols, _
-                            funcMap:=funcMap, _
-                            funcName:=callFunc, _
-                            outRow:=outRow, _
-                            callStack:=callStack, _
-                            depth:=depth + 1
-                        Else
-                            WriteWarnRow outWs, outCols, outRow, "' [WARN] Function not found: " & callFunc, depth + 1
-                            outRow = outRow + 1
-                        End If
-
-                    End If
-
-                End If
-
-            Next i
-
-        End If
-
-    Next r
-
-    callStack.Remove funcName
-
-End Sub
-
-' [DEF] 階層1のEnd行検索
-Private Function FindEndRowByLevel( _
-    ByVal ws As Worksheet, _
-    ByVal cols As Object, _
-    ByVal startRow As Long, _
-    ByVal lastRow As Long _
-) As Long
-
-    Dim r As Long
-    Dim levelValue As String
-    Dim codeText As String
-
-    For r = startRow + 1 To lastRow
-
-        levelValue = Trim$(CStr(ws.Cells(r, cols("階層")).Value))
-        codeText = Trim$(CStr(ws.Cells(r, cols("コード")).Value))
-
-        If levelValue = "1" Then
-
-            If LCase$(codeText) = "end sub" _
-                Or LCase$(codeText) = "end function" _
-                Or InStr(1, LCase$(codeText), "end sub", vbTextCompare) > 0 _
-                Or InStr(1, LCase$(codeText), "end function", vbTextCompare) > 0 Then
-
-                FindEndRowByLevel = r
-                Exit Function
-
-            End If
-
-        End If
-
-    Next r
-
-    FindEndRowByLevel = 0
-
-End Function
-
-' [DEF] 出力行コピー
-Private Sub CopyNestedRow( _
-    ByVal baseWs As Worksheet, _
-    ByVal outWs As Worksheet, _
-    ByVal baseCols As Object, _
-    ByVal outCols As Object, _
-    ByVal srcRow As Long, _
-    ByVal dstRow As Long, _
-    ByVal depth As Long _
-)
-
-    Dim codeText As String
-
-    codeText = CStr(baseWs.Cells(srcRow, baseCols("コード")).Value)
-
-    outWs.Cells(dstRow, outCols("階層")).Value = depth
-
-    outWs.Cells(dstRow, outCols("コード")).Value = _
-        String(depth * 4, " ") & LTrim$(codeText)
-
-    outWs.Cells(dstRow, outCols("アドレス")).Value = _
-        baseWs.Cells(srcRow, baseCols("アドレス")).Value
-
-    outWs.Cells(dstRow, outCols("関数名")).Value = _
-        baseWs.Cells(srcRow, baseCols("関数名")).Value
-
-    outWs.Cells(dstRow, outCols("呼び出し関数")).Value = _
-        baseWs.Cells(srcRow, baseCols("呼び出し関数")).Value
-
-End Sub
-
-' [DEF] 警告行出力
-Private Sub WriteWarnRow( _
-    ByVal outWs As Worksheet, _
-    ByVal outCols As Object, _
-    ByVal outRow As Long, _
-    ByVal message As String, _
-    ByVal depth As Long _
-)
-
-    outWs.Cells(outRow, outCols("階層")).Value = depth
-    outWs.Cells(outRow, outCols("コード")).Value = _
-        String(depth * 4, " ") & message
-
-End Sub
-
-' [DEF] 呼び出し関数分割
-Private Function SplitCallFunctions(ByVal callText As String) As Variant
-
-    callText = Replace(callText, "，", ",")
-    callText = Replace(callText, "、", ",")
-    callText = Replace(callText, "|", ",")
-
-    SplitCallFunctions = Split(callText, ",")
-
-End Function
-
-' [DEF] ヘッダMAP作成
-Private Function GetHeaderMap( _
-    ByVal ws As Worksheet, _
-    ByVal headerRow As Long, _
-    ByVal startCol As Long _
-) As Object
-
-    Dim dic As Object
-    Dim c As Long
-    Dim lastCol As Long
-    Dim headerName As String
-
-    Set dic = CreateObject("Scripting.Dictionary")
-
-    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
-
-    For c = startCol To lastCol
-
-        headerName = Trim$(CStr(ws.Cells(headerRow, c).Value))
-
-        If Len(headerName) > 0 Then
-            If Not dic.Exists(headerName) Then
-                dic.Add headerName, c
-            End If
-        End If
-
-    Next c
-
-    Set GetHeaderMap = dic
-
-End Function
-
-' [DEF] ベースヘッダ確認
-Private Function CheckBaseHeaders(ByVal cols As Object) As Boolean
-
-    CheckBaseHeaders = _
-        cols.Exists("アドレス") _
-        And cols.Exists("階層") _
-        And cols.Exists("関数名") _
-        And cols.Exists("呼び出し関数") _
-        And cols.Exists("コード")
-
-End Function
-
-' [DEF] 出力ヘッダ確認
-Private Function CheckOutputHeaders(ByVal cols As Object) As Boolean
-
-    CheckOutputHeaders = _
-        cols.Exists("階層") _
-        And cols.Exists("コード") _
-        And cols.Exists("アドレス") _
-        And cols.Exists("関数名") _
-        And cols.Exists("呼び出し関数")
-
-End Function
-
-' [DEF] ヘッダ下の連続表最終行
-Private Function GetListLastRow( _
-    ByVal ws As Worksheet, _
-    ByVal startRow As Long, _
-    ByVal startCol As Long, _
-    ByVal colCount As Long _
-) As Long
-
-    Dim r As Long
-    Dim c As Long
-    Dim lastUsedRow As Long
-    Dim hasValue As Boolean
-
-    If WorksheetFunction.CountA(ws.Cells) = 0 Then
-        GetListLastRow = startRow - 1
+    errMsg = ValidateRequiredValues(checkItems)
+    If errMsg <> "" Then
+        MsgBox errMsg, vbExclamation
         Exit Function
     End If
 
-    lastUsedRow = ws.UsedRange.row + ws.UsedRange.rows.Count - 1
+    errMsg = ValidateFolderExists(checkItems)
+    If errMsg <> "" Then
+        MsgBox errMsg, vbExclamation
+        Exit Function
+    End If
 
-    For r = startRow To lastUsedRow
-
-        hasValue = False
-
-        For c = startCol To startCol + colCount - 1
-            If Len(CStr(ws.Cells(r, c).Value)) > 0 Then
-                hasValue = True
-                Exit For
-            End If
-        Next c
-
-        If Not hasValue Then
-            GetListLastRow = r - 1
-            Exit Function
-        End If
-
-    Next r
-
-    GetListLastRow = lastUsedRow
+    ValidateInput = True
 
 End Function
+
+Private Function ValidateRequiredValues(ByVal items As Variant) As String
+
+    Dim i As Long
+    Dim label As String
+    Dim value As String
+    Dim message As String
+
+    For i = LBound(items) To UBound(items)
+        label = CStr(items(i)(0))
+        value = Trim(CStr(items(i)(1)))
+
+        If value = "" Then
+            message = message & "・" & label & " が未入力です。" & vbCrLf
+        End If
+    Next i
+
+    ValidateRequiredValues = message
+
+End Function
+
+Private Function ValidateFolderExists(ByVal items As Variant) As String
+
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    Dim i As Long
+    Dim label As String
+    Dim folderpath As String
+    Dim message As String
+
+    For i = LBound(items) To UBound(items)
+        label = CStr(items(i)(0))
+        folderpath = Trim(CStr(items(i)(1)))
+
+        If folderpath <> "" Then
+            If Not fso.FolderExists(folderpath) Then
+                message = message & "・" & label & " が存在しません：" & vbCrLf
+                message = message & "  " & folderpath & vbCrLf
+            End If
+        End If
+    Next i
+
+    ValidateFolderExists = message
+
+End Function
+
+Public Function OpenDefinitionBooks(ByVal folderpath As String) As Collection
+
+    On Error GoTo lblError
+
+    TraceStart "OpenDefinitionBooks"
+
+    Dim books As Collection
+    Set books = New Collection
+
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    Dim objFolder As Object
+    Dim objFile As Object
+
+    Set objFolder = fso.GetFolder(folderpath)
+
+    For Each objFile In objFolder.Files
+
+        ' Excelファイルのみ対象
+        Select Case LCase(fso.GetExtensionName(objFile.Name))
+            Case "xlsx", "xlsm", "xls"
+
+                TraceInfo "Open", objFile.Name
+
+                books.Add Workbooks.Open(objFile.Path)
+
+        End Select
+
+    Next objFile
+
+    TraceInfo "OpenBookCount", books.Count
+
+    Set OpenDefinitionBooks = books
+
+lblEnd:
+
+    TraceEnd "OpenDefinitionBooks"
+    Exit Function
+
+lblError:
+
+    TraceError "OpenDefinitionBooks", Err.Number, Err.Description
+    Resume lblEnd
+
+End Function
+
+Public Sub ProcessTransferFolder( _
+    ByVal folderpath As String, _
+    ByVal definitionBooks As Collection _
+)
+
+    On Error GoTo lblError
+
+    TraceStart "ProcessTransferFolder"
+
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    Dim objFolder As Object
+    Dim objFile As Object
+
+    Set objFolder = fso.GetFolder(folderpath)
+
+    For Each objFile In objFolder.Files
+
+        If IsExcelFile(objFile.Name) Then
+            TraceInfo "移送表処理開始", objFile.Name
+            Call ProcessTransferBook(objFile.Path, definitionBooks)
+            TraceInfo "移送表処理終了", objFile.Name
+        End If
+
+    Next objFile
+
+lblEnd:
+    TraceEnd "ProcessTransferFolder"
+    Exit Sub
+
+lblError:
+    TraceError "ProcessTransferFolder", Err.Number, Err.Description
+    Resume lblEnd
+
+End Sub
+
+Private Sub ProcessTransferBook( _
+    ByVal filePath As String, _
+    ByVal definitionBooks As Collection _
+)
+
+    On Error GoTo lblError
+
+    TraceStart "ProcessTransferBook"
+
+    Dim wb As Workbook
+    Set wb = Workbooks.Open(filePath, ReadOnly:=True)
+
+    TraceInfo "Open移送表", wb.Name
+
+    Dim wsCompare As Worksheet
+    Set wsCompare = GetWorksheetByName(wb, SHT_NAME_COMPARE)
+
+    If wsCompare Is Nothing Then
+        TraceInfo "比較一覧シートなし", wb.Name
+        GoTo lblEnd
+    End If
+
+    Dim transferDict As Object
+    Set transferDict = BuildTransferDictionary(wsCompare)
+
+    Dim wsOut As Worksheet
+    Set wsOut = CreateOutputSheetForTransfer(wb.Name)
+
+    Call AppendOutputList(wb.Name, wsOut.Name, transferDict.Count)
+
+    Call WriteTransferDictionary(wsOut, transferDict)
+
+lblEnd:
+    If Not wb Is Nothing Then
+        wb.Close SaveChanges:=False
+    End If
+
+    TraceEnd "ProcessTransferBook"
+    Exit Sub
+
+lblError:
+    TraceError "ProcessTransferBook", Err.Number, Err.Description
+    Resume lblEnd
+
+End Sub
+
+Private Function GetWorksheetByName( _
+    ByVal wb As Workbook, _
+    ByVal sheetName As String _
+) As Worksheet
+
+    On Error Resume Next
+    Set GetWorksheetByName = wb.Worksheets(sheetName)
+    On Error GoTo 0
+
+End Function
+
+Private Function BuildTransferDictionary(ByVal ws As Worksheet) As Object
+
+    TraceStart "BuildTransferDictionary"
+
+    Dim dict As Object
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, COL_COMPARE_TABLE).End(xlUp).Row
+
+    Dim rowNo As Long
+    Dim tableName As String
+    Dim fieldName As String
+    Dim key As String
+    Dim item As Object
+
+    For rowNo = ROW_COMPARE_START To lastRow
+
+        tableName = Trim(CStr(ws.Cells(rowNo, COL_COMPARE_TABLE).value))
+        fieldName = Trim(CStr(ws.Cells(rowNo, COL_COMPARE_FIELD).value))
+
+        If tableName <> "" And fieldName <> "" Then
+
+            key = MakeTransferKey(tableName, fieldName)
+
+            If Not dict.Exists(key) Then
+                Set item = CreateObject("Scripting.Dictionary")
+                item("RowNo") = rowNo
+                item("TableName") = tableName
+                item("FieldName") = fieldName
+
+                dict.Add key, item
+            End If
+
+        End If
+
+    Next rowNo
+
+    TraceInfo "TransferDictCount", dict.Count
+
+    Set BuildTransferDictionary = dict
+
+    TraceEnd "BuildTransferDictionary"
+
+End Function
+
+Private Function MakeTransferKey( _
+    ByVal tableName As String, _
+    ByVal fieldName As String _
+) As String
+
+    MakeTransferKey = NormalizeKeyText(tableName) & "|" & NormalizeKeyText(fieldName)
+
+End Function
+
+Private Function NormalizeKeyText(ByVal value As String) As String
+
+    value = Trim(CStr(value))
+    value = Replace(value, "　", "")
+    value = Replace(value, " ", "")
+    NormalizeKeyText = LCase$(value)
+
+End Function
+
+Private Function CreateOutputSheetForTransfer(ByVal sourceBookName As String) As Worksheet
+
+    Dim sheetName As String
+    sheetName = SafeSheetName(sourceBookName)
+
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    ws.Name = sheetName
+
+    ws.Range("A1").value = "元行番号"
+    ws.Range("B1").value = "テーブル名"
+    ws.Range("C1").value = "項目名"
+
+    Set CreateOutputSheetForTransfer = ws
+
+End Function
+
+Private Function SafeSheetName(ByVal value As String) As String
+
+    value = Replace(value, ".xlsx", "")
+    value = Replace(value, ".xlsm", "")
+    value = Replace(value, ".xls", "")
+
+    value = Replace(value, "\", "_")
+    value = Replace(value, "/", "_")
+    value = Replace(value, ":", "_")
+    value = Replace(value, "*", "_")
+    value = Replace(value, "?", "_")
+    value = Replace(value, "[", "_")
+    value = Replace(value, "]", "_")
+
+    SafeSheetName = Left$(value, 31)
+
+End Function
+
+Private Sub WriteTransferDictionary( _
+    ByVal wsOut As Worksheet, _
+    ByVal transferDict As Object _
+)
+
+    Dim rowOut As Long
+    rowOut = 2
+
+    Dim key As Variant
+    Dim item As Object
+
+    For Each key In transferDict.Keys
+
+        Set item = transferDict(key)
+
+        wsOut.Cells(rowOut, 1).value = item("RowNo")
+        wsOut.Cells(rowOut, 2).value = item("TableName")
+        wsOut.Cells(rowOut, 3).value = item("FieldName")
+
+
+        rowOut = rowOut + 1
+
+    Next key
+
+End Sub
+
+Private Sub AppendOutputList( _
+    ByVal sourceBookName As String, _
+    ByVal outputSheetName As String, _
+    ByVal itemCount As Long _
+)
+
+    Dim wsList As Worksheet
+    Set wsList = EnsureOutputListSheet()
+
+    Dim nextRow As Long
+    nextRow = wsList.Cells(wsList.Rows.Count, 1).End(xlUp).Row + 1
+
+    If nextRow < 2 Then nextRow = 2
+
+    wsList.Cells(nextRow, 1).value = nextRow - 1
+    wsList.Cells(nextRow, 2).value = sourceBookName
+    wsList.Cells(nextRow, 3).value = outputSheetName
+    wsList.Cells(nextRow, 4).value = itemCount
+
+    wsList.Hyperlinks.Add _
+        Anchor:=wsList.Cells(nextRow, 1), _
+        Address:="", _
+        SubAddress:="'" & outputSheetName & "'!A1", _
+        TextToDisplay:=CStr(nextRow - 1)
+
+End Sub
+
+Private Function EnsureOutputListSheet() As Worksheet
+
+    Dim ws As Worksheet
+    Set ws = GetWorksheetByName(ThisWorkbook, SHT_NAME_OUTPUT_LIST)
+
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add(Before:=ThisWorkbook.Worksheets(1))
+        ws.Name = SHT_NAME_OUTPUT_LIST
+
+        ws.Range("A1").value = "No"
+        ws.Range("B1").value = "元ファイル名"
+        ws.Range("C1").value = "出力シート名"
+        ws.Range("D1").value = "対象項目数"
+    End If
+
+    Set EnsureOutputListSheet = ws
+
+End Function
+
+Private Function IsExcelFile(ByVal fileName As String) As Boolean
+
+    Dim ext As String
+    ext = LCase$(Mid$(fileName, InStrRev(fileName, ".") + 1))
+
+    Select Case ext
+        Case "xlsx", "xlsm", "xls"
+            IsExcelFile = True
+        Case Else
+            IsExcelFile = False
+    End Select
+
+End Function
+
+Public Sub CloseDefinitionBooks(ByVal books As Collection)
+
+    Dim wb As Workbook
+
+    For Each wb In books
+        wb.Close SaveChanges:=False
+    Next wb
+
+End Sub
+
+'項目比較一覧から情報を転記
+Private Sub FillInfo( _
+    ByVal definitionBooks As Collection, _
+    ByVal wsOutputList As Worksheet _
+)
+
+    On Error GoTo lblError
+
+    TraceStart "FillInfo"
+
+    Dim fieldDefinitions As Variant
+    fieldDefinitions = GetOutputFieldDefinitions()
+
+    Dim lastListRow As Long
+    lastListRow = wsOutputList.Cells( _
+                        wsOutputList.Rows.Count, 1) _
+                        .End(xlUp).Row
+
+    Dim listRow As Long
+    Dim outputSheetName As String
+    Dim wsOut As Worksheet
+
+    For listRow = 2 To lastListRow
+
+        outputSheetName = Trim$( _
+            CStr(wsOutputList.Cells(listRow, 3).value))
+
+        If outputSheetName <> "" Then
+
+            Set wsOut = GetWorksheetByName( _
+                            ThisWorkbook, _
+                            outputSheetName)
+
+            If wsOut Is Nothing Then
+
+                TraceInfo _
+                    "出力シートなし", _
+                    outputSheetName
+
+            Else
+
+                Call FillOutputSheetInfo( _
+                        wsOut, _
+                        definitionBooks, _
+                        fieldDefinitions)
+
+            End If
+
+        End If
+
+        Set wsOut = Nothing
+
+    Next listRow
+
+lblEnd:
+    TraceEnd "FillInfo"
+    Exit Sub
+
+lblError:
+    TraceError _
+        "FillInfo", _
+        Err.Number, _
+        Err.Description
+
+    Resume lblEnd
+
+End Sub
+
+Private Sub FillInfo( _
+    ByVal definitionBooks As Collection, _
+    ByVal wsOutputList As Worksheet _
+)
+
+    On Error GoTo lblError
+
+    TraceStart "FillInfo"
+
+    Dim fieldDefinitions As Variant
+    fieldDefinitions = GetOutputFieldDefinitions()
+
+    Dim lastListRow As Long
+    lastListRow = wsOutputList.Cells( _
+                        wsOutputList.Rows.Count, 1) _
+                        .End(xlUp).Row
+
+    Dim listRow As Long
+    Dim outputSheetName As String
+    Dim wsOut As Worksheet
+
+    For listRow = 2 To lastListRow
+
+        outputSheetName = Trim$( _
+            CStr(wsOutputList.Cells(listRow, 3).value))
+
+        If outputSheetName <> "" Then
+
+            Set wsOut = GetWorksheetByName( _
+                            ThisWorkbook, _
+                            outputSheetName)
+
+            If wsOut Is Nothing Then
+
+                TraceInfo _
+                    "出力シートなし", _
+                    outputSheetName
+
+            Else
+
+                Call FillOutputSheetInfo( _
+                        wsOut, _
+                        definitionBooks, _
+                        fieldDefinitions)
+
+            End If
+
+        End If
+
+        Set wsOut = Nothing
+
+    Next listRow
+
+lblEnd:
+    TraceEnd "FillInfo"
+    Exit Sub
+
+lblError:
+    TraceError _
+        "FillInfo", _
+        Err.Number, _
+        Err.Description
+
+    Resume lblEnd
+
+End Sub
+
+Private Function GetOutputFieldDefinitions() As Variant
+
+    GetOutputFieldDefinitions = Array( _
+        Array("SAP論理名", "sap論理名", 0), _
+        Array("SAP物理名", "sap物理名", 0), _
+        Array("SAP型", "sap型", 0), _
+        Array("SAP桁数", "sap桁数", 0) _
+    )
+
+End Function
+
+Private Function GetDefinitionWorkbookByPrefix( _
+    ByVal definitionBooks As Collection, _
+    ByVal tableName As String _
+) As Workbook
+
+    On Error GoTo lblError
+
+    Dim prefix As String
+    prefix = LCase$(Left$(Trim$(tableName), 2))
+
+    If Len(prefix) < 2 Then
+        Exit Function
+    End If
+
+    Dim searchText As String
+    searchText = "_" & prefix & "_"
+
+    Dim wb As Workbook
+
+    For Each wb In definitionBooks
+
+        If InStr( _
+            1, _
+            LCase$(wb.Name), _
+            searchText, _
+            vbTextCompare) > 0 Then
+
+            Set GetDefinitionWorkbookByPrefix = wb
+            Exit Function
+
+        End If
+
+    Next wb
+
+    Exit Function
+
+lblError:
+    TraceError _
+        "GetDefinitionWorkbookByPrefix", _
+        Err.Number, _
+        Err.Description
+
+    Set GetDefinitionWorkbookByPrefix = Nothing
+
+End Function
+
+Private Function GetFieldInfo( _
+    ByVal wbDefinition As Workbook, _
+    ByVal sheetName As String, _
+    ByVal physicalName As String, _
+    ByVal fieldType As String, _
+    ByVal shift As Long _
+) As String
+
+    On Error GoTo lblError
+
+    Dim ws As Worksheet
+    Set ws = GetWorksheetByName( _
+                wbDefinition, _
+                sheetName)
+
+    If ws Is Nothing Then
+        GetFieldInfo = "#SHEET_NOT_FOUND"
+        Exit Function
+    End If
+
+    Dim lastCol As Long
+    Dim matchCol As Long
+    Dim colNo As Long
+
+    ' 6行目の物理名から対象列を探す
+    lastCol = ws.Cells(6, ws.Columns.Count) _
+                .End(xlToLeft).Column
+
+    For colNo = 2 To lastCol
+
+        If StrComp( _
+            Trim$(CStr(ws.Cells(6, colNo).value)), _
+            Trim$(physicalName), _
+            vbTextCompare) = 0 Then
+
+            matchCol = colNo
+            Exit For
+
+        End If
+
+    Next colNo
+
+    If matchCol = 0 Then
+        GetFieldInfo = "#FIELD_NOT_FOUND"
+        Exit Function
+    End If
+
+    Dim resultValue As Variant
+
+    Select Case LCase$(fieldType)
+
+        Case "旧論理"
+            resultValue = _
+                ws.Cells(4 + shift, matchCol).value
+
+        Case "旧型"
+            resultValue = _
+                ws.Cells(9 + shift, matchCol).value
+
+        Case "旧db列"
+            resultValue = _
+                ws.Cells(10 + shift, matchCol).value
+
+        Case "旧桁数"
+            resultValue = _
+                ws.Cells(11 + shift, matchCol).value
+
+        Case "旧サンプル"
+            resultValue = _
+                ws.Cells(14 + shift, matchCol).value
+
+        Case "sapテーブル"
+            resultValue = _
+                ws.Cells(115 + shift, matchCol).value
+
+        Case "sap論理名"
+            resultValue = _
+                ws.Cells(116 + shift, matchCol).value
+
+        Case "sap物理名"
+            resultValue = _
+                ws.Cells(117 + shift, matchCol).value
+
+        Case "sap型"
+            resultValue = _
+                ws.Cells(118 + shift, matchCol).value
+
+        Case "sap桁数"
+            resultValue = _
+                ws.Cells(119 + shift, matchCol).value
+
+        Case Else
+            GetFieldInfo = "#INVALID_FIELD_TYPE"
+            Exit Function
+
+    End Select
+
+    If IsError(resultValue) Then
+        GetFieldInfo = CStr(resultValue)
+    Else
+        GetFieldInfo = CStr(resultValue)
+    End If
+
+    Exit Function
+
+lblError:
+    TraceError _
+        "GetFieldInfo", _
+        Err.Number, _
+        Err.Description
+
+    GetFieldInfo = "#ERROR"
+
+End Function
+
+'Private Function GetWorkbookNameFromTableName(tableName As String) As String
+'
+'    ' 内部パラメータ：※現在非正規化 仮固定中
+'    ' ブック名接頭語  => 固定
+'    ' ブックパス      => シート参照
+'
+'    Dim prefix As String
+'    Dim fileprefix As String
+'    Dim folderpath As String
+'
+'    On Error GoTo ErrHandler
+'
+''[修正]　PrefixだけでBookを選択したい
+'    ' 先頭2文字を取得
+'    prefix = Left(tableName, 2)
+'    fileprefix = "%" & prefix & "%"
+'    '===================================
+'
+'    GetWorkbookNameFromTableName = _
+'        GetLatestWorkbookByPrefix(folderpath, fileprefix)
+'
+'    Exit Function
+'
+'ErrHandler:
+'    GetWorkbookNameFromTableName = ""
+'
+'End Function
+'
+
+
 
