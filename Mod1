@@ -1,0 +1,7956 @@
+Option Explicit
+
+
+'========================================
+' Entry_WinAPI.bas
+'========================================
+
+'==============================
+' ■ API
+'==============================
+
+Public Const CF_UNICODETEXT As Long = 13
+
+Public Const HWND_TOPMOST = -1
+Public Const HWND_NOTOPMOST = -2
+
+Public Const SWP_NOMOVE = &H2
+Public Const SWP_NOSIZE = &H1
+
+'==============================
+' ■ ExDSL
+'==============================
+
+Public Type ExDslTask
+    Value As String
+End Type
+
+Public Enum OutputMode
+    OutputNormal
+    OutputDetail
+    OutputErrorOnly
+End Enum
+
+Public Enum ProcessStatus
+    StatusNone
+    StatusRunning
+    StatusCompleted
+    StatusFailed
+End Enum
+
+'==============================
+' ■ Query
+'==============================
+
+Public Enum TBL_JOIN_TYPE
+
+    TBL_JOIN_INNER = 0
+
+    TBL_JOIN_LEFT = 1
+
+    TBL_JOIN_RIGHT = 2
+
+End Enum
+
+'==============================
+' ■ Clipboard API
+'==============================
+
+#If VBA7 Then
+
+Private Declare PtrSafe Function OpenClipboard Lib "user32" (ByVal hWnd As LongPtr) As Long
+Private Declare PtrSafe Function CloseClipboard Lib "user32" () As Long
+Private Declare PtrSafe Function GetClipboardData Lib "user32" (ByVal wFormat As Long) As LongPtr
+Private Declare PtrSafe Function GlobalLock Lib "kernel32" (ByVal hMem As LongPtr) As LongPtr
+Private Declare PtrSafe Function GlobalUnlock Lib "kernel32" (ByVal hMem As LongPtr) As Long
+Private Declare PtrSafe Function lstrlenW Lib "kernel32" (ByVal lpString As LongPtr) As Long
+Private Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" ( _
+    ByVal destination As LongPtr, ByVal source As LongPtr, ByVal length As Long)
+
+#End If
+
+
+'==============================
+' ■ Window API
+'==============================
+
+#If VBA7 Then
+
+Private Declare PtrSafe Function SetWindowPos Lib "user32" ( _
+    ByVal hWnd As LongPtr, _
+    ByVal hWndInsertAfter As LongPtr, _
+    ByVal X As Long, ByVal Y As Long, _
+    ByVal cx As Long, ByVal cy As Long, _
+    ByVal uFlags As Long) As Long
+
+#Else
+
+Private Declare Function SetWindowPos Lib "user32" ( _
+    ByVal hWnd As Long, _
+    ByVal hWndInsertAfter As Long, _
+    ByVal X As Long, ByVal Y As Long, _
+    ByVal cx As Long, ByVal cy As Long, _
+    ByVal uFlags As Long) As Long
+
+#End If
+
+' @Feature: WinAPI
+' @Section: Worker
+' @Role: Getter
+' @Summary: ClipboardTextを取得する
+' @Status: Review
+Public Function GetClipboardText() As String
+    Dim hMem As LongPtr
+    Dim lpMem As LongPtr
+    Dim length As Long
+    Dim buffer As String
+
+    If OpenClipboard(0&) = 0 Then Exit Function
+
+    hMem = GetClipboardData(CF_UNICODETEXT)
+    If hMem <> 0 Then
+        lpMem = GlobalLock(hMem)
+        If lpMem <> 0 Then
+            length = lstrlenW(lpMem)
+            buffer = String$(length, vbNullChar)
+            CopyMemory StrPtr(buffer), lpMem, length * 2
+            GlobalUnlock hMem
+            GetClipboardText = buffer
+        End If
+    End If
+
+    CloseClipboard
+End Function
+
+
+
+
+'========================================
+' Mod_CodeAnalysis_Helper.bas
+'========================================
+
+
+'==================================================
+' Function Map
+'==================================================
+
+Public Function BuildFunctionMap( _
+    ByVal ws As Worksheet, _
+    ByVal cols As Object, _
+    ByVal startRow As Long _
+) As Object
+
+    Dim Result As Object
+    Set Result = CreateObject("Scripting.Dictionary")
+
+
+    Dim lastRow As Long
+
+    lastRow = ws.Cells( _
+        ws.rows.Count, _
+        cols("コード") _
+    ).End(xlUp).row
+
+
+    Dim rowIndex As Long
+
+    For rowIndex = startRow To lastRow
+
+        Dim funcName As String
+
+        funcName = Trim$(CStr( _
+            ws.Cells( _
+                rowIndex, _
+                cols("関数名") _
+            ).Value _
+        ))
+
+
+        If Len(funcName) > 0 Then
+
+            Dim endFuncRow As Long
+
+            endFuncRow = FindFunctionEndRow( _
+                ws, _
+                cols, _
+                rowIndex, _
+                lastRow _
+            )
+
+
+            If endFuncRow > 0 Then
+
+                If Not Result.Exists(funcName) Then
+
+                    Result.Add _
+                        funcName, _
+                        Array(rowIndex, endFuncRow)
+
+                End If
+
+            End If
+
+        End If
+
+    Next rowIndex
+
+
+    Set BuildFunctionMap = Result
+
+End Function
+
+
+Public Function FindFunctionEndRow( _
+    ByVal ws As Worksheet, _
+    ByVal cols As Object, _
+    ByVal startRow As Long, _
+    ByVal lastRow As Long _
+) As Long
+
+    Dim rowIndex As Long
+
+    For rowIndex = startRow + 1 To lastRow
+
+        Dim levelValue As String
+        Dim codeText As String
+
+        levelValue = Trim$(CStr( _
+            ws.Cells( _
+                rowIndex, _
+                cols("階層") _
+            ).Value _
+        ))
+
+        codeText = LCase$(Trim$(CStr( _
+            ws.Cells( _
+                rowIndex, _
+                cols("コード") _
+            ).Value _
+        )))
+
+
+        If levelValue = "1" Then
+
+            If codeText = "end sub" _
+                Or codeText = "end function" _
+                Or InStr(codeText, "end sub") > 0 _
+                Or InStr(codeText, "end function") > 0 Then
+
+                FindFunctionEndRow = rowIndex
+                Exit Function
+
+            End If
+
+        End If
+
+    Next rowIndex
+
+End Function
+
+
+'==================================================
+' Recursive Expansion
+'==================================================
+
+Public Sub ExpandFunctionJp( _
+    ByVal baseWs As Worksheet, _
+    ByVal outWs As Worksheet, _
+    ByVal baseCols As Object, _
+    ByVal outCols As Object, _
+    ByVal funcMap As Object, _
+    ByVal funcName As String, _
+    ByRef outRow As Long, _
+    ByVal callStack As Object, _
+    ByVal depth As Long _
+)
+
+    If callStack.Exists(funcName) Then
+
+        WriteNestedWarning _
+            outWs, _
+            outCols, _
+            outRow, _
+            "' [SKIP] recursive call: " & funcName, _
+            depth
+
+        outRow = outRow + 1
+
+        Exit Sub
+
+    End If
+
+
+    callStack.Add funcName, True
+
+
+    Dim rowRange As Variant
+    rowRange = funcMap(funcName)
+
+    Dim startRow As Long
+    Dim endRow As Long
+
+    startRow = CLng(rowRange(0))
+    endRow = CLng(rowRange(1))
+
+
+    Dim rowIndex As Long
+
+    For rowIndex = startRow To endRow
+
+        CopyNestedCodeRow _
+            baseWs, _
+            outWs, _
+            baseCols, _
+            outCols, _
+            rowIndex, _
+            outRow, _
+            depth
+
+        outRow = outRow + 1
+
+
+        Dim callText As String
+
+        callText = Trim$(CStr( _
+            baseWs.Cells( _
+                rowIndex, _
+                baseCols("呼び出し関数") _
+            ).Value _
+        ))
+
+
+        If Len(callText) > 0 Then
+
+            Dim calls As Variant
+            calls = SplitCallFunctions(callText)
+
+            Dim i As Long
+
+            For i = LBound(calls) To UBound(calls)
+
+                Dim callFunc As String
+                callFunc = Trim$(CStr(calls(i)))
+
+
+                If Len(callFunc) > 0 _
+                    And callFunc <> funcName Then
+
+
+                    If funcMap.Exists(callFunc) Then
+
+                        ExpandFunctionJp _
+                            baseWs:=baseWs, _
+                            outWs:=outWs, _
+                            baseCols:=baseCols, _
+                            outCols:=outCols, _
+                            funcMap:=funcMap, _
+                            funcName:=callFunc, _
+                            outRow:=outRow, _
+                            callStack:=callStack, _
+                            depth:=depth + 1
+
+                    Else
+
+                        WriteNestedWarning _
+                            outWs, _
+                            outCols, _
+                            outRow, _
+                            "' [WARN] Function not found: " & callFunc, _
+                            depth + 1
+
+                        outRow = outRow + 1
+
+                    End If
+
+                End If
+
+            Next i
+
+        End If
+
+    Next rowIndex
+
+
+    callStack.Remove funcName
+
+End Sub
+
+
+'==================================================
+' Output
+'==================================================
+
+Private Sub CopyNestedCodeRow( _
+    ByVal baseWs As Worksheet, _
+    ByVal outWs As Worksheet, _
+    ByVal baseCols As Object, _
+    ByVal outCols As Object, _
+    ByVal srcRow As Long, _
+    ByVal dstRow As Long, _
+    ByVal depth As Long _
+)
+
+    Dim codeText As String
+
+    codeText = CStr( _
+        baseWs.Cells( _
+            srcRow, _
+            baseCols("コード") _
+        ).Value _
+    )
+
+
+    outWs.Cells( _
+        dstRow, _
+        outCols("階層") _
+    ).Value = depth
+
+
+    outWs.Cells( _
+        dstRow, _
+        outCols("コード") _
+    ).Value = _
+        String$(depth * 4, " ") & _
+        LTrim$(codeText)
+
+
+    outWs.Cells( _
+        dstRow, _
+        outCols("アドレス") _
+    ).Value = _
+        baseWs.Cells( _
+            srcRow, _
+            baseCols("アドレス") _
+        ).Value
+
+
+    outWs.Cells( _
+        dstRow, _
+        outCols("関数名") _
+    ).Value = _
+        baseWs.Cells( _
+            srcRow, _
+            baseCols("関数名") _
+        ).Value
+
+
+    outWs.Cells( _
+        dstRow, _
+        outCols("呼び出し関数") _
+    ).Value = _
+        baseWs.Cells( _
+            srcRow, _
+            baseCols("呼び出し関数") _
+        ).Value
+
+End Sub
+
+
+Private Sub WriteNestedWarning( _
+    ByVal outWs As Worksheet, _
+    ByVal outCols As Object, _
+    ByVal outRow As Long, _
+    ByVal message As String, _
+    ByVal depth As Long _
+)
+
+    outWs.Cells( _
+        outRow, _
+        outCols("階層") _
+    ).Value = depth
+
+
+    outWs.Cells( _
+        outRow, _
+        outCols("コード") _
+    ).Value = _
+        String$(depth * 4, " ") & _
+        message
+
+End Sub
+
+
+'==================================================
+' Call Parsing
+'==================================================
+
+Public Function SplitCallFunctions( _
+    ByVal callText As String _
+) As Variant
+
+    callText = Replace(callText, "，", ",")
+    callText = Replace(callText, "、", ",")
+    callText = Replace(callText, "|", ",")
+
+    SplitCallFunctions = Split( _
+        callText, _
+        "," _
+    )
+
+End Function
+
+
+
+'========================================
+' Mod_CodeCatalog.bas
+'========================================
+
+
+' @Feature: CodeCatalog
+' @Section: Settings
+' @Summary: CodeCatalogの列構成を定義する
+Private Function CodeCatalogHeaders() As Variant
+
+    CodeCatalogHeaders = Array( _
+        "FileName", _
+        "Scope", _
+        "ProcedureType", _
+        "ProcedureName", _
+        "Feature", _
+        "Section", _
+        "Role", _
+        "Summary", _
+        "Note", _
+        "Status" _
+    )
+    
+End Function
+
+' @Feature: CodeCatalog
+' @Section: Worker
+' @Summary: Procedure情報をCodeCatalogの1行へ変換する
+Private Function BuildCatalogRow( _
+    ByVal fileName As String, _
+    ByVal defMatch As Object, _
+    ByVal feature As String, _
+    ByVal section As String, _
+    ByVal role As String, _
+    ByVal summary As String, _
+    ByVal note As String, _
+    ByVal status As String _
+) As Variant
+
+    BuildCatalogRow = Array( _
+        fileName, _
+        defMatch.SubMatches(0), _
+        defMatch.SubMatches(1), _
+        defMatch.SubMatches(2), _
+        feature, _
+        section, _
+        role, _
+        summary, _
+        note, _
+        status _
+    )
+
+End Function
+
+Public Sub BuildCodeCatalog(ByVal folderPath As String, ByVal destination As String)
+
+    If Len(folderPath) = 0 Then Exit Sub
+
+    Dim tbl As cls_TBL
+    Set tbl = New cls_TBL
+
+    tbl.InitHeaders CodeCatalogHeaders()
+    
+    ReadCatalogFiles folderPath, tbl
+    
+    If tbl.rowCount = 0 Then
+        ShowStatus "取り込みがありません"
+    End If
+    
+    ' シート出力
+     OutputCodeCatalog tbl, destination
+    
+
+End Sub
+
+Private Sub ReadCatalogFiles(ByVal folderPath As String, ByRef tbl As cls_TBL)
+        
+    Dim filePath As String
+    filePath = Dir(folderPath & "\*.*")
+    
+    Do While Len(filePath) > 0
+
+        Dim sourceText As String
+        sourceText = ReadSourceFile(folderPath & "\" & filePath)
+
+        ExtractProcedures sourceText, filePath, tbl
+
+        filePath = Dir()
+
+    Loop
+
+End Sub
+
+Private Function GetSourceFolderPath() As String
+
+    With Application.FileDialog(msoFileDialogFolderPicker)
+
+        If .Show <> -1 Then Exit Function
+
+        GetSourceFolderPath = .SelectedItems(1)
+
+    End With
+
+End Function
+
+Private Function ReadSourceFile( _
+    ByVal filePath As String _
+) As String
+
+    Dim fileNo As Integer
+    fileNo = FreeFile
+
+    Open filePath For Input As #fileNo
+
+    Dim lineText As String
+    Dim sourceText As String
+
+    Do Until EOF(fileNo)
+
+        Line Input #fileNo, lineText
+
+        sourceText = sourceText & _
+                     lineText & vbCrLf
+
+    Loop
+
+    Close #fileNo
+
+    ReadSourceFile = sourceText
+
+End Function
+
+Private Sub ExtractProcedures( _
+    ByVal sourceText As String, _
+    ByVal fileName As String, _
+    ByRef tbl As cls_TBL _
+)
+
+    Dim featureRegex As Object
+    Dim sectionRegex As Object
+    Dim summaryRegex As Object
+    Dim roleRegex As Object
+    Dim noteRegex As Object
+    Dim statusRegex As Object
+    Dim defRegex As Object
+
+    Set featureRegex = CreateObject("VBScript.RegExp")
+    Set sectionRegex = CreateObject("VBScript.RegExp")
+    Set summaryRegex = CreateObject("VBScript.RegExp")
+    Set roleRegex = CreateObject("VBScript.RegExp")
+    Set noteRegex = CreateObject("VBScript.RegExp")
+    Set statusRegex = CreateObject("VBScript.RegExp")
+    Set defRegex = CreateObject("VBScript.RegExp")
+
+    With featureRegex
+        .Global = False
+        .IgnoreCase = True
+        .pattern = "^\s*'\s*@Feature\s*:?\s*(.+)$"
+    End With
+    
+    With sectionRegex
+        .Global = False
+        .IgnoreCase = True
+        .pattern = "^\s*'\s*@Section\s*:?\s*(.+)$"
+    End With
+    
+    With summaryRegex
+        .Global = False
+        .IgnoreCase = True
+        .pattern = "^\s*'\s*@Summary\s*:?\s*(.+)$"
+    End With
+    
+    With roleRegex
+        .Global = False
+        .IgnoreCase = True
+        .pattern = "^\s*'\s*@Role\s*:?\s*(.+)$"
+    End With
+    
+    With noteRegex
+        .Global = False
+        .IgnoreCase = True
+        .pattern = "^\s*'\s*@Note\s*:?\s*(.+)$"
+    End With
+    
+    With statusRegex
+        .Global = False
+        .IgnoreCase = True
+        .pattern = "^\s*'\s*@Status\s*:?\s*(.+)$"
+    End With
+    
+    With defRegex
+        .Global = False
+        .IgnoreCase = True
+        .pattern = _
+            "^\s*(Public|Private|Friend)?\s*" & _
+            "(Sub|Function|Property\s+(Get|Let|Set))\s+" & _
+            "([A-Za-z_][A-Za-z0-9_]*)"
+    End With
+
+    Dim lines() As String
+    lines = Split(sourceText, vbCrLf)
+
+    Dim lineText As Variant
+    Dim pendingFeature As String
+    Dim pendingSection As String
+    Dim pendingSummary As String
+    Dim pendingRole As String
+    Dim pendingNote As String
+    Dim pendingStatus As String
+
+    For Each lineText In lines
+
+        If featureRegex.test(CStr(lineText)) Then
+        
+            Dim featureMatch As Object
+            Set featureMatch = featureRegex.Execute(CStr(lineText))(0)
+            pendingFeature = Trim$(featureMatch.SubMatches(0))
+        
+        ElseIf sectionRegex.test(CStr(lineText)) Then
+        
+            Dim sectionMatch As Object
+            Set sectionMatch = sectionRegex.Execute(CStr(lineText))(0)
+            pendingSection = Trim$(sectionMatch.SubMatches(0))
+            
+        ElseIf summaryRegex.test(CStr(lineText)) Then
+        
+            Dim summaryMatch As Object
+            Set summaryMatch = summaryRegex.Execute(CStr(lineText))(0)
+            pendingSummary = Trim$(summaryMatch.SubMatches(0))
+        
+        ElseIf roleRegex.test(CStr(lineText)) Then
+
+            Dim roleMatch As Object
+            Set roleMatch = roleRegex.Execute(CStr(lineText))(0)
+
+            pendingRole = Trim$(roleMatch.SubMatches(0))
+
+        ElseIf noteRegex.test(CStr(lineText)) Then
+
+            Dim noteMatch As Object
+            Set noteMatch = noteRegex.Execute(CStr(lineText))(0)
+
+            pendingNote = Trim$(noteMatch.SubMatches(0))
+
+        ElseIf statusRegex.test(CStr(lineText)) Then
+
+            Dim statusMatch As Object
+            Set statusMatch = statusRegex.Execute(CStr(lineText))(0)
+
+            pendingStatus = Trim$(statusMatch.SubMatches(0))
+            
+        ElseIf defRegex.test(CStr(lineText)) Then
+
+            Dim defMatch As Object
+            Set defMatch = defRegex.Execute(CStr(lineText))(0)
+
+            tbl.addRow BuildCatalogRow( _
+                fileName, _
+                defMatch, _
+                pendingFeature, _
+                pendingSection, _
+                pendingRole, _
+                pendingSummary, _
+                pendingNote, _
+                pendingStatus _
+            )
+            
+            pendingFeature = vbNullString
+            pendingSection = vbNullString
+            pendingRole = vbNullString
+            pendingSummary = vbNullString
+            pendingNote = vbNullString
+            pendingStatus = vbNullString
+    
+        End If
+
+    Next lineText
+
+End Sub
+
+Private Sub OutputCodeCatalog(ByRef tbl As cls_TBL, ByVal destination As String)
+
+    ' destination 行にヘッダ出力
+    Dim targetSheet As String
+    Dim targetRange As String
+    
+    targetSheet = Split(destination, "!")(0)
+    targetRange = Split(destination, "!")(1)
+    
+    Dim outputData As Variant
+    outputData = tbl.ToArray
+    
+    With Sheets(targetSheet).Range(targetRange)
+        .Resize( _
+            tbl.rowCount + 1, _
+            tbl.columnCount _
+        ).Value = outputData
+    End With
+
+End Sub
+
+
+
+'========================================
+' Mod_CodeCatalog_Update.bas
+'========================================
+'検討中
+
+
+
+'========================================
+' Mod_common.bas
+'========================================
+
+' @Feature: ApplicationStatus
+' @Section: Helper
+' @Role: Output
+' @Summary: ExcelのStatusBarへメッセージを表示する
+' @Status: Keep
+Public Sub ShowStatus( _
+    ByVal message As String, _
+    Optional ByVal seconds As Long = 5 _
+)
+
+    ShowStatusMessage message
+
+    Application.OnTime _
+        Now + TimeSerial(0, 0, seconds), _
+        "ClearStatus"
+
+End Sub
+
+' @Feature: ApplicationStatus
+' @Section: Helper
+' @Role: Output
+' @Summary: ExcelのStatusBarへ一定時間メッセージを表示する
+' @Status: Keep
+Public Sub ShowStatusMessage( _
+    ByVal message As String _
+)
+
+    Application.StatusBar = message
+
+End Sub
+
+Public Sub ClearStatus()
+
+    Application.StatusBar = False
+
+End Sub
+
+Public Sub toggle_AddInMode()
+
+    If ThisWorkbook.IsAddin = True Then
+        ThisWorkbook.IsAddin = False
+    Else
+        ThisWorkbook.IsAddin = True
+    End If
+
+End Sub
+
+
+Public Sub RaiseStatusError( _
+    ByVal errNumber As Long, _
+    ByVal errSource As String, _
+    ByVal errDescription As String _
+)
+
+    ShowStatus errDescription
+
+    Err.Raise _
+        errNumber, _
+        errSource, _
+        errDescription
+
+End Sub
+
+
+
+'========================================
+' Mod_Config.bas
+'========================================
+
+' =========================================================
+' Entry_Config
+'
+' ThisWorkbook.Names 登録を管理
+'
+' ・設定値はAdd-in側(ThisWorkbook)のNameに保存する
+' ・ActiveWorkbook / ActiveSheet は設定時のみ参照する
+' ・後続処理にはWorkbook等のオブジェクトとして返す
+'
+' Config Names:
+'   CurrentBookName
+'   CurrentSheetName
+' =========================================================
+
+' @Summary: Add-in側のNameから設定値を取得する
+' @Role: Config
+' @Raises: 指定Config Name未登録
+Private Function GetConfigValue( _
+    ByVal configName As String _
+) As String
+
+    Dim nm As Name
+
+    On Error Resume Next
+    Set nm = ThisWorkbook.Names(configName)
+    On Error GoTo 0
+
+    If nm Is Nothing Then
+        RaiseStatusError GetConfigErrorNumber(), _
+                    "Entry_Config.GetConfigValue", _
+                    "ReadConfig : ConfigName is not configured."
+    End If
+
+    Dim formula As String
+    Dim Value As Variant
+
+    formula = nm.RefersTo
+    Value = Application.Evaluate(formula)
+
+    GetConfigValue = CStr(Value)
+
+End Function
+
+Private Function GetConfigErrorNumber() As Long
+    GetConfigErrorNumber = vbObjectError + 1200
+End Function
+
+' @Summary: Add-in自身のWorkbookを返す。
+Public Function GetAddinWorkbook() As Workbook
+    Set GetAddinWorkbook = ThisWorkbook
+End Function
+
+' @Summary: 現在のActiveWorkbookを作業対象として保存する。
+Public Sub SetCurrentBookName()
+
+    ThisWorkbook.Names.Add _
+        Name:="CurrentBookName", _
+        RefersTo:="=""" & _
+                  Replace(ActiveWorkbook.Name, """", """""") & _
+                  """"
+
+    ShowStatus "Set Current Book Name : " & ActiveWorkbook.Name
+
+End Sub
+
+' @Summary: 保存済みの作業対象Workbook名を取得する。
+Public Function GetCurrentBookName() As String
+
+    GetCurrentBookName = GetConfigValue("CurrentBookName")
+
+End Function
+
+' @Summary: 保存済みWorkbook名から作業対象Workbookを解決する
+' @Role: Config
+' @Raises: 未設定 / Workbook未オープン
+Public Function GetCurrentWorkbook() As Workbook
+
+    Dim wb As Workbook
+
+    ' 開いているWorkbookコレクションから名前で解決する
+    On Error Resume Next
+    Set wb = RequireCurrentWorkbook()
+    On Error GoTo 0
+
+    If wb Is Nothing Then
+        RaiseStatusError GetConfigErrorNumber(), _
+                  "Entry_Config.GetCurrentWorkbook", _
+                  "ResolveWorkbook : Configured workbook is not open: " & GetCurrentBookName()
+    End If
+
+    Set GetCurrentWorkbook = wb
+
+End Function
+
+' @Summary: 保存済みの作業対象Worksheet名を取得する。
+Public Function GetCurrentSheetName() As String
+
+    GetCurrentSheetName = GetConfigValue("CurrentSheetName")
+
+End Function
+
+' @Summary: 現在のActiveSheetを作業対象として保存する。
+Public Sub SetCurrentSheet()
+
+    Dim SheetName As String
+    SheetName = ActiveSheet.Name
+
+    ThisWorkbook.Names.Add _
+        Name:="CurrentSheetName", _
+        RefersTo:="=""" & _
+                  Replace(SheetName, """", """""") & _
+                  """"
+
+    ShowStatus "Set Current Sheet : " & SheetName
+
+End Sub
+
+' @Summary: 現在のActiveSheetをActive状態にする。
+Public Sub SelectCurrentSheet()
+
+    GetCurrentWorkbook(). _
+        Worksheets(GetCurrentSheetName()).Activate
+
+End Sub
+
+Public Function RequireCurrentWorkbook() As Workbook
+
+    Dim bookName As String
+    bookName = GetConfigValue("CurrentBookName")
+
+    If ActiveWorkbook Is Nothing Then
+        Err.Raise _
+            vbObjectError + 2000, _
+            "RequireCurrentWorkbook", _
+            "ActiveWorkbook is Nothing."
+    End If
+
+    If StrComp(bookName, ActiveWorkbook.Name, vbTextCompare) <> 0 Then
+        Stop
+'        Err.Raise _
+'            vbObjectError + 2001, _
+'            "RequireCurrentWorkbook", _
+'            "Unexpected workbook." & vbCrLf & _
+'            "Expected: " & bookName & vbCrLf & _
+'            "Actual: " & ActiveWorkbook.Name
+    End If
+
+    Set RequireCurrentWorkbook = ActiveWorkbook
+
+End Function
+
+
+
+
+
+'========================================
+' Mod_ExDSL.bas
+'========================================
+
+Public Sub RunMacroFromSelection()
+
+    On Error GoTo errLabel
+
+    Dim tasks() As ExDslTask
+    Dim taskCount  As Long
+    
+    ' ExDSL形式に該当するセルを抽出
+    tasks = ExDslTasksFromSelection(taskCount)
+    If taskCount = 0 Then Exit Sub
+
+    ' ExDSLフォーマット判定
+    RequireExDSL tasks
+    
+    ' ExDSLをExpressionへ変換
+    Dim expressions As Collection
+    Set expressions = ParseExDslTasks(tasks)
+    
+    ' Invocationへ変換
+    Dim Invocations As Collection
+    Set Invocations = BuildInvocations(expressions)
+    
+    'Invocationからマクロ実行
+    RunMacroInvocations Invocations
+    
+    Exit Sub
+    
+
+errLabel:
+
+    Debug.Print Err.Number, Err.source, Err.Description
+
+End Sub
+
+' SelectionからExDslTask形式を作成
+Public Function ExDslTasksFromSelection( _
+    ByRef taskCount As Long _
+) As ExDslTask()
+
+    Dim targetRange As Range
+    Dim foundCell As Range
+    Dim firstAddress As String
+
+    Dim tasks() As ExDslTask
+
+    If TypeName(Selection) <> "Range" Then
+        RaiseStatusError vbObjectError + 1000, _
+                  "ExDslTasksFromSelection", _
+                  "Selection is not a Range."
+    End If
+
+    Set targetRange = Selection
+
+    With targetRange
+
+        Set foundCell = .Find( _
+            What:="*(*", _
+            LookIn:=xlValues, _
+            LookAt:=xlPart)
+
+        If Not foundCell Is Nothing Then
+
+            firstAddress = foundCell.Address
+
+            Do
+
+                taskCount = taskCount + 1
+                ReDim Preserve tasks(1 To taskCount)
+
+                tasks(taskCount).Value = CStr(foundCell.Value2)
+
+                Set foundCell = .FindNext(foundCell)
+
+            Loop While Not foundCell Is Nothing _
+                   And foundCell.Address <> firstAddress
+
+        End If
+
+    End With
+
+    ExDslTasksFromSelection = tasks
+
+End Function
+
+Public Sub RequireExDSL(ByRef candidates() As ExDslTask)
+
+    Dim i As Long
+
+    For i = LBound(candidates) To UBound(candidates)
+
+        If Not IsValidExDSL(candidates(i).Value) Then
+            
+            RaiseStatusError vbObjectError + 1000, _
+                      "Mod_Contracts.RequireExDSL", _
+                      "ExDSL validation failed."
+        
+        End If
+        
+    Next i
+
+
+End Sub
+
+Public Function IsValidExDSL(ByVal Value As String) As Boolean
+
+    Dim posOpen As Long
+    Dim posClose As Long
+    Dim header As String
+    Dim Identifier As String
+    Dim argumentsText As String
+    Dim posDot As Long
+
+    If Len(Value) = 0 Then Exit Function
+    If Len(Value) < 2 Then Exit Function
+
+    posOpen = InStr(Value, "(")
+    posClose = InStrRev(Value, ")")
+
+    ' Identifier部分が存在しない
+    If posOpen <= 1 Then Exit Function
+
+    ' 閉じ括弧がない、または順序異常
+    If posClose <= posOpen Then Exit Function
+
+    ' Identifier / Command 部
+    header = Left$(Value, posOpen - 1)
+
+    ' Identifier取得
+    posDot = InStr(header, ".")
+
+    If posDot > 0 Then
+        Identifier = Left$(header, posDot - 1)
+    Else
+        Identifier = header
+    End If
+
+    If Not IsRegisteredIdentifier(Identifier) Then Exit Function
+    
+    ' Argumentsが空
+    argumentsText = Mid$(Value, _
+                         posOpen + 1, _
+                         posClose - posOpen - 1)
+
+    If Identifier = "M" And Len(Trim$(argumentsText)) = 0 Then Exit Function
+    
+    ' Content部
+    Dim suffix As String
+    
+    suffix = Mid$(Value, posClose + 1)
+    
+    If Len(suffix) > 0 Then
+    
+        If Left$(suffix, 1) <> "[" Then Exit Function
+        If Right$(suffix, 1) <> "]" Then Exit Function
+    
+    End If
+    
+
+    IsValidExDSL = True
+
+End Function
+
+Public Function ParseExDslTasks( _
+    ByRef tasks() As ExDslTask _
+) As Collection
+
+    Dim expressions As Collection
+    Set expressions = New Collection
+
+    Dim i As Long
+
+    For i = LBound(tasks) To UBound(tasks)
+
+        expressions.Add ParseExDslTask(tasks(i))
+
+    Next i
+
+    Set ParseExDslTasks = expressions
+
+End Function
+
+Private Function ParseExDslTask( _
+    ByRef task As ExDslTask _
+) As Cls_ExDsl_Expression
+
+    Dim expression As Cls_ExDsl_Expression
+    Set expression = New Cls_ExDsl_Expression
+    
+    Dim Value As String
+    Value = task.Value
+    
+    Dim posOpen As Long
+    Dim posClose As Long
+    Dim header As String
+    Dim Identifier As String
+    Dim argumentsText As String
+    
+'    Dim Arguments As Collection
+'    Dim posDot As Long
+'
+    Dim Command As String
+    Dim Content As String
+    
+    posOpen = InStr(Value, "(")
+    posClose = InStrRev(Value, ")")
+
+    ' Header 部分
+    header = Left$(Value, posOpen - 1)
+    ParseHeader header, Identifier, Command
+    
+    expression.Identifier = Identifier
+    expression.Command = Command
+    
+    ' Contentは次工程
+    Content = ParseContent(Value, posClose)
+    expression.Content = Content
+    
+    ' Arguments 部分
+    argumentsText = Mid$(Value, _
+                         posOpen + 1, _
+                         posClose - posOpen - 1)
+                             
+    Dim args() As String
+    Dim i As Long
+    
+    args = ParseArguments(argumentsText)
+    
+    For i = LBound(args) To UBound(args)
+        expression.AddArgument args(i)
+    Next i
+
+    ' DEBUG
+    ' =========================================================
+'
+'    Debug.Print "Identifier = " & expression.Identifier
+'    Debug.Print "Command    = " & expression.Command
+'    Debug.Print "Content    = " & expression.Content
+'
+'    Dim ii As Long
+'    Dim out As String
+'    For ii = 1 To expression.ArgumentCount
+'        out = out & expression.GetArgument(ii) & ","
+'    Next ii
+'    out = "Arguments    = [" & out
+'    out = Left(out, Len(out) - 1) & "]"
+'    Debug.Print out
+    ' =========================================================
+    
+    
+    Set ParseExDslTask = expression
+        
+End Function
+
+Private Sub ParseHeader( _
+    ByVal header As String, _
+    ByRef Identifier As String, _
+    ByRef Command As String _
+)
+
+    Dim posDot As Long
+
+    posDot = InStr(header, ".")
+
+    If posDot > 0 Then
+
+        Identifier = Left$(header, posDot - 1)
+        Command = Mid$(header, posDot + 1)
+
+    Else
+
+        Identifier = header
+        Command = vbNullString
+
+    End If
+
+End Sub
+
+Private Function ParseArguments( _
+    ByVal argumentsText As String _
+) As String()
+
+    Dim args() As String
+    Dim i As Long
+
+    args = Split(argumentsText, ",")
+
+    For i = LBound(args) To UBound(args)
+        args(i) = Trim$(args(i))
+    Next i
+
+    ParseArguments = args
+
+End Function
+
+Private Function ParseContent( _
+        ByVal Value As String, _
+        ByVal posClose As Long _
+) As String
+        
+    Dim suffix As String
+    suffix = Mid$(Value, posClose + 1)
+    
+    If Len(suffix) > 0 Then
+    
+        ParseContent = Mid(suffix, 2, Len(suffix) - 2)
+      
+    End If
+    
+    
+End Function
+
+Private Function BuildInvocations( _
+    ByRef expressions As Collection _
+) As Collection
+    
+    Dim expression As Cls_ExDsl_Expression
+    Dim Invocations As Collection
+    Set Invocations = New Collection
+    
+    For Each expression In expressions
+
+        Invocations.Add BuildInvocation(expression)
+
+    Next expression
+
+    Set BuildInvocations = Invocations
+
+End Function
+'
+'Private Function BuildInvocation( _
+'    ByRef expression As Cls_ExDsl_Expression _
+') As Cls_ExDsl_Invocation
+'
+'    Dim Invocation As Cls_ExDsl_Invocation
+'    Set Invocation = New Cls_ExDsl_Invocation
+'
+'    Select Case expression.Identifier
+'
+'        Case "M"
+'
+'            Invocation.procedureName = _
+'                expression.GetArgument(1)
+'
+'            Invocation.AddArguments _
+'                expression.GetArgumentsFrom(2)
+'
+'        Case "L", "T"
+'
+'            Invocation.procedureName = _
+'                ResolveProcedureName( _
+'                    expression.Identifier & "." & _
+'                    expression.Command)
+'
+'            Invocation.AddArguments _
+'                expression.GetArgumentsFrom(1)
+'
+'    End Select
+'
+'    Set BuildInvocation = Invocation
+'
+'End Function
+
+Public Sub RunMacroInvocations( _
+    ByRef Invocations As Collection _
+)
+    Dim Invocation As Cls_ExDsl_Invocation
+
+    For Each Invocation In Invocations
+    
+        RunMacroInvocation Invocation
+
+    Next Invocation
+
+    Exit Sub
+
+errLabel:
+
+    If Err.Number <> 0 Then
+        MsgBox "実行エラー: " & Err.Description & vbCrLf & "RunMacroInvocations"
+        Err.Clear
+    End If
+    On Error GoTo 0
+
+
+End Sub
+
+Public Sub RunMacroInvocation( _
+    ByRef Invocation As Cls_ExDsl_Invocation _
+)
+    
+    Dim procedureName As String
+    procedureName = Invocation.procedureName
+    
+    Select Case Invocation.ArgumentCount
+    
+        Case 0
+            Application.Run procedureName
+
+        Case 1
+            Application.Run procedureName, _
+                Invocation.GetArgument(1)
+
+        Case 2
+            Application.Run procedureName, _
+                Invocation.GetArgument(1), _
+                Invocation.GetArgument(2)
+
+        Case 3
+            Application.Run procedureName, _
+                Invocation.GetArgument(1), _
+                Invocation.GetArgument(2), _
+                Invocation.GetArgument(3)
+
+        Case 4
+            Application.Run procedureName, _
+                Invocation.GetArgument(1), _
+                Invocation.GetArgument(2), _
+                Invocation.GetArgument(3), _
+                Invocation.GetArgument(4)
+
+        Case 5
+            Application.Run procedureName, _
+                Invocation.GetArgument(1), _
+                Invocation.GetArgument(2), _
+                Invocation.GetArgument(3), _
+                Invocation.GetArgument(4), _
+                Invocation.GetArgument(5)
+
+        Case Else
+            RaiseStatusError vbObjectError + 1001, _
+                      "RunMacroInvocation", _
+                      "Too many arguments."
+    End Select
+
+    Exit Sub
+    
+
+End Sub
+
+
+
+
+'========================================
+' Mod_ExDsl_CmdFS.bas
+'========================================
+
+' @Feature: FileSystem
+' @Section: ExDSL
+' @Role: Command
+' @Summary: 指定フォルダ配下を階層走査しWorksheetへTree一覧を出力する
+' @Status: Review
+Public Sub OutputFolderTree( _
+    ByVal rootPath As String, _
+    ByVal destination As String _
+)
+
+    Dim tbl As cls_TBL
+    Set tbl = BuildFolderTreeTable(rootPath)
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    ws.Range(destination) _
+        .Resize(tbl.rowCount + 1, tbl.columnCount) _
+        .Value = tbl.ToArray
+
+End Sub
+
+' @Feature: FileSystem
+' @Section: Worker
+' @Role: Builder
+Private Function BuildFolderTreeTable( _
+    ByVal rootPath As String _
+) As cls_TBL
+
+    Dim tbl As cls_TBL
+    Set tbl = New cls_TBL
+
+    tbl.InitHeaders Array( _
+        "Level", _
+        "Type", _
+        "Name", _
+        "FullPath" _
+    )
+
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    Dim rootFolder As Object
+    Set rootFolder = fso.GetFolder(rootPath)
+
+    AppendFolderTree tbl, rootFolder, 0
+
+    Set BuildFolderTreeTable = tbl
+
+End Function
+
+' @Feature: FileSystem
+' @Section: Worker
+' @Role: Builder
+Private Sub AppendFolderTree( _
+    ByRef tbl As cls_TBL, _
+    ByVal folder As Object, _
+    ByVal level As Long _
+)
+
+    tbl.addRow Array( _
+        level, _
+        "Folder", _
+        folder.Name, _
+        folder.Path _
+    )
+
+    Dim subFolder As Object
+
+    For Each subFolder In folder.SubFolders
+        AppendFolderTree tbl, subFolder, level + 1
+    Next subFolder
+
+    Dim file As Object
+
+    For Each file In folder.Files
+
+        tbl.addRow Array( _
+            level + 1, _
+            "File", _
+            file.Name, _
+            file.Path _
+        )
+
+    Next file
+
+End Sub
+
+
+
+'========================================
+' Mod_ExDsl_CmdL.bas
+'========================================
+
+' @Feature: Macro
+' @Section: Syntax
+' @Role: Builder
+' @Summary: Range値からM形式のExDSL文字列を生成する
+' @Status: Review
+Public Function fCnvL(ByVal inptShtName As String) As String
+    fCnvL = "L[" & inptShtName & "]"
+End Function
+
+' @Feature: Layer
+' @Section: Syntax
+' @Role: Parser
+' @Summary: L[]形式からWorksheet名を取得する
+' @Status: Keep
+Public Function ParseLayerLink( _
+    ByVal linkText As String _
+) As String
+
+    linkText = Trim$(linkText)
+
+    If Left$(linkText, 2) <> "L[" Then Exit Function
+
+    Dim startPos As Long
+    Dim endPos As Long
+
+    startPos = InStr(linkText, "[") + 1
+    endPos = InStr(startPos, linkText, "]")
+
+    If endPos <= startPos Then Exit Function
+
+    ParseLayerLink = Mid$( _
+        linkText, _
+        startPos, _
+        endPos - startPos _
+    )
+
+End Function
+
+Public Sub CopyLayer(ByVal templateName As String, _
+                         ByVal copyName As String)
+                         
+Debug.Print "templateName = " & templateName
+Debug.Print "copyName = " & copyName
+
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook()
+    
+    If Not WorksheetExists(templateName, wb) Then
+        RaiseStatusError vbObjectError + 1100, _
+                  "CopyLayer", _
+                  "Template worksheet does not exist: " & templateName
+    End If
+    
+    If WorksheetExists(copyName, wb) Then
+        RaiseStatusError vbObjectError + 1101, _
+                  "CopyLayer", _
+                  "Destination worksheet already exists: " & copyName
+    End If
+
+    Dim copySheet As Worksheet
+    Set copySheet = wb.Worksheets.Add
+    
+    copySheet.Name = copyName
+
+    Dim templateSheet As Worksheet
+    Set templateSheet = wb.Worksheets(templateName)
+    
+    templateSheet.Cells.copy destination:=copySheet.Range("A1")
+
+    
+End Sub
+
+Private Function SheetListHeaders() As Variant
+
+    SheetListHeaders = Array( _
+                                "Index", _
+                                "SheetName", _
+                                "L" _
+                                )
+End Function
+
+Private Function BuildSheetListRow(ByVal ws As Worksheet) As Variant
+
+    BuildSheetListRow = Array( _
+                            ws.index, _
+                            ws.Name, _
+                            "L[" & ws.Name & "]" _
+                            )
+End Function
+
+' @Feature: Layer
+' @Section: ExDSL
+' @Role: Command
+' @Summary: 指定リストの順序をActiveWorkbookのWorksheetへ適用する
+' @Status: Review
+Public Sub ReorderSheets( _
+    ByVal headerCell As String _
+)
+
+    Dim wb As Workbook
+    Set wb = ActiveWorkbook
+    
+    Dim rng As Range
+    Set rng = ActiveSheet.Range(headerCell)
+    
+    Dim row As Long
+    row = rng.row + 1
+
+    Dim sheetNameColumn As Long
+    sheetNameColumn = rng.column
+
+    Dim targetPosition As Long
+    targetPosition = 1
+
+    Dim SheetName As String
+
+    Do While Len(Trim$(rng.Worksheet.Cells(row, sheetNameColumn).Value)) > 0
+
+        SheetName = Trim$(rng.Worksheet.Cells(row, sheetNameColumn).Value)
+
+        If WorksheetExists(SheetName, wb) Then
+
+            If wb.Worksheets(SheetName).index <> targetPosition Then
+                wb.Worksheets(SheetName).Move _
+                    Before:=wb.Worksheets(targetPosition)
+            End If
+
+            targetPosition = targetPosition + 1
+
+        End If
+
+        row = row + 1
+
+    Loop
+    
+    rng.Worksheet.Activate
+
+
+End Sub
+
+' @Feature: Layer
+' @Section: ExDSL
+' @Role: Command
+' @Summary: WorkbookのWorksheet一覧をL[]形式を含む表として出力する
+' @Status: Review
+Public Sub OutputSheetList( _
+    ByVal destination As String _
+)
+    ' ExDslを想定
+    Dim wb As Workbook
+    Set wb = ActiveWorkbook
+    
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+    
+    Dim tbl As cls_TBL
+    Set tbl = BuildSheetListTable(wb)
+    
+    ws.Range(destination) _
+        .Resize(tbl.rowCount + 1, tbl.columnCount) _
+        .Value = tbl.ToArray
+    
+    
+End Sub
+
+Private Function BuildSheetListTable( _
+    ByVal wb As Workbook _
+) As cls_TBL
+
+    Dim tbl As cls_TBL
+    Set tbl = New cls_TBL
+
+    tbl.InitHeaders SheetListHeaders()
+        
+    Dim ws As Worksheet
+    
+    For Each ws In wb.Worksheets
+        tbl.addRow BuildSheetListRow(ws)
+    Next ws
+    
+    Set BuildSheetListTable = tbl
+    
+
+End Function
+
+' @Feature: Layer
+' @Section: ExDSL
+' @Role: Command
+' @Summary: ActiveWorkbookのWorksheetを名前の昇順で並べ替える
+' @Status: Review
+Public Sub SortSheetsByName()
+
+    Dim wb As Workbook
+    Set wb = ActiveWorkbook
+
+    Application.ScreenUpdating = False
+
+    On Error GoTo ERR_HANDLER
+
+    Dim i As Long
+    Dim j As Long
+    Dim sheetCount As Long
+
+    sheetCount = wb.Worksheets.Count
+
+    For i = 1 To sheetCount - 1
+
+        For j = i + 1 To sheetCount
+
+            If UCase$(wb.Worksheets(i).Name) > _
+               UCase$(wb.Worksheets(j).Name) Then
+
+                wb.Worksheets(j).Move _
+                    Before:=wb.Worksheets(i)
+
+            End If
+
+        Next j
+
+    Next i
+
+    Application.ScreenUpdating = True
+    Exit Sub
+
+ERR_HANDLER:
+
+    Application.ScreenUpdating = True
+    RaiseStatusError _
+        Err.Number, _
+        "SortSheetsByName", _
+        Err.Description
+
+End Sub
+
+' @Feature: Layer
+' @Section: ExDSL
+' @Role: Command
+' @Summary: Workbook内のL[]セルにWorksheet Hyperlinkを再構築する
+' @Status: Review
+Public Sub RebuildLayerHyperlinks()
+
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook()
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    On Error GoTo ERR_HANDLER
+
+    RebuildLayerHyperlinksInWorkbook wb
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    ShowStatus "L[]リンクを再構築しました"
+    Exit Sub
+
+ERR_HANDLER:
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    RaiseStatusError _
+        Err.Number, _
+        "RebuildLayerHyperlinks", _
+        Err.Description
+
+End Sub
+
+Private Sub RebuildLayerHyperlinksInWorkbook( _
+    ByVal wb As Workbook _
+)
+
+    Dim ws As Worksheet
+
+    For Each ws In wb.Worksheets
+
+        Dim cell As Range
+
+        For Each cell In ws.UsedRange.Cells
+
+            If VarType(cell.Value) = vbString Then
+
+                Dim linkText As String
+                linkText = CStr(cell.Value)
+
+                Dim SheetName As String
+                SheetName = ParseLayerLink(linkText)
+
+                If Len(SheetName) > 0 Then
+
+                    If WorksheetExists(SheetName, wb) Then
+
+                        RebuildLayerHyperlink _
+                            cell, _
+                            wb.Worksheets(SheetName)
+
+                    Else
+
+                        Debug.Print _
+                            "未リンク：シート [" & _
+                            SheetName & _
+                            "] が存在しません"
+
+                    End If
+
+                End If
+
+            End If
+
+        Next cell
+
+    Next ws
+
+End Sub
+
+Private Sub RebuildLayerHyperlink( _
+    ByVal sourceCell As Range, _
+    ByVal targetWs As Worksheet _
+)
+
+    If sourceCell.Hyperlinks.Count > 0 Then
+        sourceCell.Hyperlinks.Delete
+    End If
+
+    sourceCell.Font.ColorIndex = xlAutomatic
+    sourceCell.Font.Underline = xlUnderlineStyleNone
+
+    sourceCell.Worksheet.Hyperlinks.Add _
+        Anchor:=sourceCell, _
+        Address:="", _
+        SubAddress:="'" & targetWs.Name & "'!A1", _
+        TextToDisplay:=CStr(sourceCell.Value)
+
+End Sub
+
+
+' @Feature: Layer
+' @Section: ExDSL
+' @Role: Command
+' @Summary: 旧シート名・新シート名の一覧を適用し、L[]リンク更新とシート順変更を行う
+' @Status: Review
+Public Sub ApplySheetRenameList( _
+    ByVal sourceAddress As String _
+)
+
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook()
+
+    Dim sourceRange As Range
+    Set sourceRange = ActiveSheet.Range(sourceAddress)
+
+    If sourceRange.Columns.Count < 2 Then
+        RaiseStatusError _
+            vbObjectError + 1200, _
+            "ApplySheetRenameList", _
+            "Source range must contain OldName and NewName columns."
+    End If
+
+    Dim baseSheet As Worksheet
+    Set baseSheet = ActiveSheet
+
+    Dim previousSheet As Worksheet
+    Set previousSheet = baseSheet
+
+    Dim rowIndex As Long
+
+    For rowIndex = 1 To sourceRange.rows.Count
+
+        Dim targetSheet As Worksheet
+
+        Set targetSheet = ApplySheetRenameRow( _
+            wb, _
+            sourceRange, _
+            rowIndex _
+        )
+
+        If Not targetSheet Is Nothing Then
+
+            If targetSheet.index <> previousSheet.index + 1 Then
+                targetSheet.Move After:=previousSheet
+            End If
+
+            Set previousSheet = targetSheet
+
+        End If
+
+    Next rowIndex
+
+    baseSheet.Activate
+
+End Sub
+
+
+Private Function ApplySheetRenameRow( _
+    ByVal wb As Workbook, _
+    ByVal sourceRange As Range, _
+    ByVal rowIndex As Long _
+) As Worksheet
+
+    Dim oldName As String
+    Dim newName As String
+
+    oldName = Trim$(CStr(sourceRange.Cells(rowIndex, 1).Value))
+    newName = Trim$(CStr(sourceRange.Cells(rowIndex, 2).Value))
+
+    If Len(oldName) = 0 Then Exit Function
+
+    If Not WorksheetExists(oldName, wb) Then Exit Function
+
+    Dim ws As Worksheet
+    Set ws = wb.Worksheets(oldName)
+
+    ' 名前変更なしでも並び順適用対象として返す
+    If Len(newName) = 0 Or oldName = newName Then
+        Set ApplySheetRenameRow = ws
+        Exit Function
+    End If
+
+    If WorksheetExists(newName, wb) Then
+        RaiseStatusError _
+            vbObjectError + 1201, _
+            "ApplySheetRenameRow", _
+            "Destination worksheet already exists: " & newName
+    End If
+
+    ws.Name = newName
+
+    ReplaceLayerLinks _
+        wb, _
+        oldName, _
+        newName
+
+    Set ApplySheetRenameRow = ws
+
+End Function
+
+' @Feature: Layer
+' @Section: ExDSL
+' @Role: Command
+' @Summary: 指定範囲のL[]リンク先Worksheetを選択したWorkbookへ移動する
+' @Status: Review
+Public Sub MoveLinkedSheetsToWorkbook( _
+    ByVal sourceAddress As String _
+)
+
+    Dim sourceWb As Workbook
+    Set sourceWb = GetCurrentWorkbook()
+
+    Dim sourceRange As Range
+    Set sourceRange = ActiveSheet.Range(sourceAddress)
+
+    Dim moveList As Object
+    Set moveList = BuildLayerLinkList(sourceRange)
+
+    If moveList.Count = 0 Then
+        ShowStatus "L[]が見つかりません"
+        Exit Sub
+    End If
+
+    Dim targetWb As Workbook
+    Set targetWb = SelectTargetWorkbook()
+
+    If targetWb Is Nothing Then Exit Sub
+
+    MoveWorksheetsByName _
+        sourceWb, _
+        targetWb, _
+        moveList
+
+End Sub
+
+Private Function BuildLayerLinkList( _
+    ByVal sourceRange As Range _
+) As Object
+
+    Dim Result As Object
+    Set Result = CreateObject("Scripting.Dictionary")
+
+    Dim cell As Range
+
+    For Each cell In sourceRange.Cells
+
+        If VarType(cell.Value) = vbString Then
+
+            Dim SheetName As String
+            SheetName = ParseLayerLink(CStr(cell.Value))
+
+            If Len(SheetName) > 0 Then
+                Result(SheetName) = True
+            End If
+
+        End If
+
+    Next cell
+
+    Set BuildLayerLinkList = Result
+
+End Function
+
+Private Function SelectTargetWorkbook() As Workbook
+
+    Dim filePath As Variant
+
+    filePath = Application.GetOpenFilename( _
+        "Excelファイル (*.xlsx;*.xlsm), *.xlsx;*.xlsm", _
+        , _
+        "移動先ブックを選択" _
+    )
+
+    If VarType(filePath) = vbBoolean Then
+        If filePath = False Then Exit Function
+    End If
+
+    Set SelectTargetWorkbook = Workbooks.Open(CStr(filePath))
+
+End Function
+
+Private Sub MoveWorksheetsByName( _
+    ByVal sourceWb As Workbook, _
+    ByVal targetWb As Workbook, _
+    ByVal moveList As Object _
+)
+
+    Dim key As Variant
+
+    For Each key In moveList.keys
+
+        Dim SheetName As String
+        SheetName = CStr(key)
+
+        If Not WorksheetExists(SheetName, sourceWb) Then
+            ShowStatus "存在しないシート: " & SheetName
+            GoTo CONTINUE_LOOP
+        End If
+
+        If WorksheetExists(SheetName, targetWb) Then
+            ShowStatus "移動先に既に存在: " & SheetName
+            GoTo CONTINUE_LOOP
+        End If
+
+        sourceWb.Worksheets(SheetName).Move _
+            After:=targetWb.Worksheets(targetWb.Worksheets.Count)
+
+CONTINUE_LOOP:
+
+    Next key
+
+End Sub
+
+
+
+
+'========================================
+' Mod_ExDsl_CmdM.bas
+'========================================
+
+Public Function fCnvM(ByRef Address As Range) As String
+
+    fCnvM = "M(" & WorksheetFunction.TextJoin(",", True, Address) & ")"
+
+End Function
+
+
+' @Feature: Macro
+' @Section: ExDSL
+' @Role: Command
+' @Summary: 指定した関数を起点に呼び出し関数を再帰展開して出力する
+' @Status: Review
+Public Sub BuildNestedCodeJp( _
+    ByVal entryPoint As String, _
+    ByVal baseHeaderRangeText As String, _
+    ByVal outputHeaderRangeText As String _
+)
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Dim baseHeader As Range
+    Dim outHeader As Range
+
+    Set baseHeader = ws.Range(baseHeaderRangeText)
+    Set outHeader = ws.Range(outputHeaderRangeText)
+
+
+    Dim baseCols As Object
+    Dim outCols As Object
+
+    Set baseCols = GetHeaderMap( _
+        ws, _
+        baseHeader.row, _
+        baseHeader.column _
+    )
+
+    Set outCols = GetHeaderMap( _
+        ws, _
+        outHeader.row, _
+        outHeader.column _
+    )
+
+
+    RequireNestedCodeBaseHeaders baseCols
+    RequireNestedCodeOutputHeaders outCols
+
+
+    Dim funcMap As Object
+
+    Set funcMap = BuildFunctionMap( _
+        ws, _
+        baseCols, _
+        baseHeader.row + 1 _
+    )
+
+
+    If Not funcMap.Exists(entryPoint) Then
+
+        RaiseStatusError _
+            vbObjectError + 1600, _
+            "BuildNestedCodeJp", _
+            "Entry function not found: " & entryPoint
+
+    End If
+
+
+    Dim outRow As Long
+    outRow = outHeader.row + 1
+
+
+    ClearNestedCodeOutput _
+        ws, _
+        outRow, _
+        outHeader.column, _
+        outCols.Count
+
+
+    Dim callStack As Object
+    Set callStack = CreateObject("Scripting.Dictionary")
+
+
+    Application.ScreenUpdating = False
+
+    On Error GoTo ERR_HANDLER
+
+
+    ExpandFunctionJp _
+        baseWs:=ws, _
+        outWs:=ws, _
+        baseCols:=baseCols, _
+        outCols:=outCols, _
+        funcMap:=funcMap, _
+        funcName:=entryPoint, _
+        outRow:=outRow, _
+        callStack:=callStack, _
+        depth:=1
+
+
+    Application.ScreenUpdating = True
+
+    ShowStatus "BuildNestedCodeJp 完了"
+
+    Exit Sub
+
+
+ERR_HANDLER:
+
+    Application.ScreenUpdating = True
+
+    RaiseStatusError _
+        Err.Number, _
+        "BuildNestedCodeJp", _
+        Err.Description
+
+End Sub
+
+
+Private Sub ClearNestedCodeOutput( _
+    ByVal ws As Worksheet, _
+    ByVal startRow As Long, _
+    ByVal startCol As Long, _
+    ByVal colCount As Long _
+)
+
+    Dim lastRow As Long
+
+    lastRow = GetListEndRow( _
+        ws, _
+        startRow, _
+        startCol, _
+        colCount _
+    )
+
+    If lastRow < startRow Then Exit Sub
+
+
+    ws.Range( _
+        ws.Cells(startRow, startCol), _
+        ws.Cells(lastRow, startCol + colCount - 1) _
+    ).ClearContents
+
+End Sub
+
+Private Sub RequireNestedCodeBaseHeaders( _
+    ByVal cols As Object _
+)
+
+    If Not cols.Exists("アドレス") _
+        Or Not cols.Exists("階層") _
+        Or Not cols.Exists("関数名") _
+        Or Not cols.Exists("呼び出し関数") _
+        Or Not cols.Exists("コード") Then
+
+        RaiseStatusError _
+            vbObjectError + 1601, _
+            "RequireNestedCodeBaseHeaders", _
+            "ベーステーブルに必要なヘッダがありません。"
+
+    End If
+
+End Sub
+
+
+Private Sub RequireNestedCodeOutputHeaders( _
+    ByVal cols As Object _
+)
+
+    If Not cols.Exists("階層") _
+        Or Not cols.Exists("コード") _
+        Or Not cols.Exists("アドレス") _
+        Or Not cols.Exists("関数名") _
+        Or Not cols.Exists("呼び出し関数") Then
+
+        RaiseStatusError _
+            vbObjectError + 1602, _
+            "RequireNestedCodeOutputHeaders", _
+            "出力テーブルに必要なヘッダがありません。"
+
+    End If
+
+End Sub
+
+
+
+'========================================
+' Mod_ExDsl_CmdT.bas
+'========================================
+
+' @Feature: Tag
+' @Section: ExDSL
+' @Role: Command
+' @Summary: Workbook内から指定Tagを検索し一覧化する
+' @Status: Review
+Public Sub GetTagList( _
+    ByVal tagId As String, _
+    ByVal outputHeaderRangeText As String _
+)
+
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook()
+
+    Dim outWs As Worksheet
+    Set outWs = ActiveSheet
+
+    Dim outHeader As Range
+    Set outHeader = outWs.Range(outputHeaderRangeText)
+
+    Dim outRow As Long
+    Dim outCol As Long
+
+    outRow = outHeader.row + 1
+    outCol = outHeader.column
+
+
+    '----------------------------------
+    ' Existing output clear
+    '----------------------------------
+
+    Dim clearLastRow As Long
+
+    clearLastRow = GetListEndRow( _
+        outWs, _
+        outRow, _
+        outCol, _
+        5 _
+    )
+
+    If clearLastRow >= outRow Then
+
+        outWs.Range( _
+            outWs.Cells(outRow, outCol), _
+            outWs.Cells(clearLastRow, outCol + 4) _
+        ).ClearContents
+
+    End If
+
+
+    '----------------------------------
+    ' Search settings
+    '----------------------------------
+
+    Dim searchTag As String
+    Dim patternText As String
+
+    searchTag = GetTagFindKey(tagId)
+    patternText = BuildTagPattern(tagId)
+
+    Dim regEx As Object
+    Set regEx = CreateObject("VBScript.RegExp")
+
+    With regEx
+        .pattern = patternText
+        .Global = True
+        .IgnoreCase = False
+    End With
+
+
+    '----------------------------------
+    ' Workbook search
+    '----------------------------------
+
+    Dim ws As Worksheet
+
+    For Each ws In wb.Worksheets
+
+        If ws.Name <> outWs.Name Then
+
+            Dim rng As Range
+            Set rng = ws.UsedRange
+
+            Dim c As Range
+
+            Set c = rng.Find( _
+                What:=searchTag, _
+                LookIn:=xlValues, _
+                LookAt:=xlPart, _
+                SearchOrder:=xlByRows, _
+                SearchDirection:=xlNext, _
+                MatchCase:=False _
+            )
+
+            If Not c Is Nothing Then
+
+                Dim firstAddress As String
+                firstAddress = c.Address(External:=True)
+
+                Do
+
+                    Dim checkValue As String
+                    checkValue = CStr(c.Value2)
+
+                    If regEx.test(checkValue) Then
+
+                        Dim matches As Object
+                        Set matches = regEx.Execute(checkValue)
+
+                        Dim matchItem As Object
+
+                        For Each matchItem In matches
+
+                            outWs.Hyperlinks.Add _
+                                Anchor:=outWs.Cells(outRow, outCol), _
+                                Address:="", _
+                                SubAddress:= _
+                                    "'" & ws.Name & "'!" & _
+                                    c.Address(False, False), _
+                                TextToDisplay:=ws.Name
+
+                            outWs.Cells(outRow, outCol + 1).Value = _
+                                CStr(matchItem.Value)
+
+                            outRow = outRow + 1
+
+                        Next matchItem
+
+                    End If
+
+                    Set c = rng.FindNext(c)
+
+                    If c Is Nothing Then Exit Do
+
+                    If c.Address(External:=True) = firstAddress Then
+                        Exit Do
+                    End If
+
+                Loop
+
+            End If
+
+        End If
+
+    Next ws
+
+End Sub
+
+
+'==================================================
+' Replace from Tag List
+'==================================================
+
+' @Feature: Tag
+' @Section: ExDSL
+' @Role: Command
+' @Summary: Tag一覧の移行後値をリンク先セルへ反映する
+' @Status: Review
+Public Sub ReplaceTagList( _
+    ByVal tagId As String, _
+    ByVal headerRangeText As String _
+)
+
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook()
+
+    Dim listWs As Worksheet
+    Set listWs = ActiveSheet
+
+    Dim headerCell As Range
+    Set headerCell = listWs.Range(headerRangeText)
+
+    Dim rowIndex As Long
+    Dim baseCol As Long
+
+    rowIndex = headerCell.row + 1
+    baseCol = headerCell.column
+
+
+    Do While Len(CStr( _
+        listWs.Cells(rowIndex, baseCol).Value2 _
+    )) > 0
+
+        Dim linkCell As Range
+        Set linkCell = listWs.Cells(rowIndex, baseCol)
+
+        Dim beforeText As String
+        Dim afterText As String
+
+        beforeText = CStr( _
+            listWs.Cells(rowIndex, baseCol + 1).Value2 _
+        )
+
+        afterText = CStr( _
+            listWs.Cells(rowIndex, baseCol + 2).Value2 _
+        )
+
+
+        If Len(afterText) > 0 Then
+
+            If linkCell.Hyperlinks.Count > 0 Then
+
+                Dim h As Hyperlink
+                Set h = linkCell.Hyperlinks(1)
+
+                Dim targetCell As Range
+
+                Set targetCell = GetCellFromSubAddress( _
+                    wb, _
+                    h.SubAddress _
+                )
+
+                If Not targetCell Is Nothing Then
+
+                    targetCell.Value = Replace( _
+                        CStr(targetCell.Value), _
+                        beforeText, _
+                        afterText _
+                    )
+
+                End If
+
+            End If
+
+        End If
+
+        rowIndex = rowIndex + 1
+
+    Loop
+
+    ShowStatus "タグ置換完了"
+
+End Sub
+
+
+'========================================
+' Mod_ExDsl_Helper.bas
+'========================================
+
+
+' @Feature: ExDSL
+' @Section: Resolver
+' @Role: Resolver
+' @Summary: ExDSLのRange指定文字列をWorksheet Rangeへ解決する
+' @Status: Keep
+Public Function ResolveRangeArgument( _
+    ByVal rangeText As String _
+) As Range
+
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook()
+
+    rangeText = Trim$(rangeText)
+
+    Dim posSeparator As Long
+    posSeparator = InStr(1, rangeText, "!", vbTextCompare)
+
+    If posSeparator = 0 Then
+
+        Set ResolveRangeArgument = _
+            ActiveSheet.Range(rangeText)
+
+        Exit Function
+
+    End If
+
+
+    Dim SheetName As String
+    Dim addressText As String
+
+    SheetName = Left$(rangeText, posSeparator - 1)
+    addressText = Mid$(rangeText, posSeparator + 1)
+
+
+    ' 'Sheet Name'!A1 形式
+    If Left$(SheetName, 1) = "'" _
+        And Right$(SheetName, 1) = "'" Then
+
+        SheetName = Mid$( _
+            SheetName, _
+            2, _
+            Len(SheetName) - 2 _
+        )
+
+        SheetName = Replace( _
+            SheetName, _
+            "''", _
+            "'" _
+        )
+
+    End If
+
+
+    If Not WorksheetExists(SheetName, wb) Then
+
+        RaiseStatusError _
+            vbObjectError + 1400, _
+            "ResolveRangeArgument", _
+            "Worksheet not found: " & SheetName
+
+    End If
+
+
+    Set ResolveRangeArgument = _
+        wb.Worksheets(SheetName).Range(addressText)
+
+End Function
+
+
+
+'========================================
+' Mod_ExDSL_ResolveProcedureName.bas
+'========================================
+
+Public Function IsRegisteredIdentifier(ByVal Identifier As String) As Boolean
+
+    Select Case Identifier
+        Case "M", "L", "T", "SYS", "FS"
+            IsRegisteredIdentifier = True
+        Case Else
+            Stop
+            IsRegisteredIdentifier = False
+    End Select
+
+End Function
+
+Public Function BuildInvocation( _
+    ByRef expression As Cls_ExDsl_Expression _
+) As Cls_ExDsl_Invocation
+
+    Dim Invocation As Cls_ExDsl_Invocation
+    Set Invocation = New Cls_ExDsl_Invocation
+
+    Select Case expression.Identifier
+
+        Case "M"
+
+            Invocation.procedureName = _
+                expression.GetArgument(1)
+
+            Invocation.AddArguments _
+                expression.GetArgumentsFrom(2)
+
+        Case Else
+
+            Invocation.procedureName = _
+                ResolveProcedureName( _
+                    expression.Identifier & "." & _
+                    expression.Command)
+
+            Invocation.AddArguments _
+                expression.GetArgumentsFrom(1)
+
+    End Select
+
+    Set BuildInvocation = Invocation
+
+End Function
+
+Public Function ResolveProcedureName(ByVal key As String) As String
+
+    Dim functionName As String
+    
+    Dim Identifier As String
+    Dim Command As String
+    
+    Identifier = Split(key, ".")(0)
+    Command = Split(key, ".")(1)
+
+    Select Case UCase(Identifier)
+        
+    Case "L"
+        Select Case Command
+            Case "COPY"
+                functionName = "CopyLayer"
+            
+            Case "SL"
+                functionName = "OutputSheetList"
+            
+            Case "SORT"
+                functionName = "ReorderSheets"
+
+            Case "RNM"
+                functionName = "ApplySheetRenameList"
+                
+            Case "MOV"
+                functionName = "MoveLinkedSheetsToWorkbook"
+                    
+            Case "SBN"
+                functionName = "SortSheetsByName"
+                    
+            Case Else
+                Stop ' MYSTYPE
+                
+        End Select
+    
+    Case "FS"
+    
+        Select Case Command
+                
+            Case "EXPORT"
+                functionName = "ExportBas"
+            
+            Case Else
+    
+        End Select
+
+    
+    Case "SYS"
+        Select Case Command
+            Case "CATALOG"
+                functionName = "BuildCodeCatalog"
+            
+            Case Else
+                Stop ' MYSTYPE
+        
+        End Select
+    
+    
+    
+    
+'
+'        Case "T.C"
+'            functionName = "CreateTag"
+'
+'        Case "T.R"
+'            functionName = "ReplaceTag"
+'
+    Case Else
+        RaiseStatusError vbObjectError + 1002, _
+                  "ResolveProcedureName", _
+                  "Unknown dispatch key: " & key
+    
+    End Select
+    
+
+    ResolveProcedureName = functionName
+
+
+End Function
+
+
+
+
+
+'========================================
+' Mod_ExDsl_Tag.bas
+'========================================
+
+' @Feature: Tag
+' @Section: Syntax
+' @Role: Validator
+' @Summary: 文字列がTAG[]形式か判定する
+' @Status: Keep
+Public Function IsTagFormat( _
+    ByVal text As String _
+) As Boolean
+
+    Dim regEx As Object
+    Set regEx = CreateObject("VBScript.RegExp")
+
+    With regEx
+        .pattern = "^[^\[\]]+\[[^\]]*\]$"
+        .Global = False
+        .IgnoreCase = False
+    End With
+
+    IsTagFormat = regEx.test(text)
+
+End Function
+
+' @Feature: Tag
+' @Section: Syntax
+' @Role: Parser
+' @Summary: TAG[]形式からTag Identifierを取得する
+' @Status: Keep
+Public Function GetTagId( _
+    ByVal tagText As String _
+) As String
+
+    Dim posOpen As Long
+    posOpen = InStr(1, tagText, "[", vbBinaryCompare)
+
+    If posOpen <= 1 Then Exit Function
+
+    GetTagId = Left$(tagText, posOpen - 1)
+
+End Function
+
+' @Feature: Tag
+' @Section: Syntax
+' @Role: Builder
+' @Summary: Tag指定を検索用正規表現へ変換する
+' @Status: Keep
+Public Function BuildTagPattern( _
+    ByVal tagSpec As String _
+) As String
+
+    Dim Value As String
+    Value = Trim$(tagSpec)
+
+    Dim hasWildcard As Boolean
+    hasWildcard = (Right$(Value, 2) = ".*")
+
+    If hasWildcard Then
+        Value = Left$(Value, Len(Value) - 2)
+    End If
+
+    Value = EscapeRegExp(Value)
+
+    If hasWildcard Then
+
+        BuildTagPattern = _
+            Value & "(\.[^.[]+)*\[[^\]]*\]"
+
+    Else
+
+        BuildTagPattern = _
+            Value & "\[[^\]]*\]"
+
+    End If
+
+End Function
+
+' @Feature: Tag
+' @Section: Syntax
+' @Role: Parser
+' @Summary: Tag指定からFind用の先頭Identifierを取得する
+' @Status: Keep
+Public Function GetTagFindKey( _
+    ByVal tagSpec As String _
+) As String
+
+    Dim posDot As Long
+    posDot = InStr(tagSpec, ".")
+
+    If posDot > 0 Then
+        GetTagFindKey = Left$(tagSpec, posDot - 1)
+    Else
+        GetTagFindKey = tagSpec
+    End If
+
+End Function
+
+
+
+'========================================
+' Mod_Interior.bas
+'========================================
+
+'' 下線
+Sub UnderlineBottomOfSelection()
+
+    Dim lastRow As Long
+    Dim rng As Range
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    ' 選択範囲の最下行番号
+    lastRow = Selection.rows(Selection.rows.Count).row
+
+    ' 選択範囲の列幅を維持したまま最下行を取得
+    Set rng = Intersect(Selection.Worksheet.rows(lastRow), Selection)
+
+    rng.Borders(xlEdgeBottom).LineStyle = xlContinuous
+    rng.Borders(xlEdgeBottom).Weight = xlThin   ' 太さ調整（xlMedium / xlThick）
+
+End Sub
+
+'' ハイライト
+Public Sub HighlightFromClipboard_Red()
+
+    Dim clipText As String
+    Dim c As Range
+    Dim pos As Long
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    clipText = GetClipboardText()
+    If clipText = "" Then Exit Sub
+
+    On Error GoTo ErrHandler
+
+    Application.ScreenUpdating = False
+
+    For Each c In Selection.Cells
+
+        If Not IsError(c.Value) Then
+
+            pos = InStr(1, CStr(c.Value), clipText, vbBinaryCompare)
+
+            Do While pos > 0
+
+                With c.Characters(pos, Len(clipText)).Font
+                    .Color = vbRed
+                    .Bold = True
+                End With
+
+                pos = InStr( _
+                    pos + Len(clipText), _
+                    CStr(c.Value), _
+                    clipText, _
+                    vbBinaryCompare _
+                )
+
+            Loop
+
+        End If
+
+    Next c
+
+ExitPoint:
+    Application.ScreenUpdating = True
+    Exit Sub
+
+ErrHandler:
+    Application.ScreenUpdating = True
+    RaiseStatusError Err.Number, Err.source, Err.Description
+
+End Sub
+
+Public Sub SetRedBold()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    With Selection.Font
+        .Color = vbRed
+        .Bold = True
+    End With
+
+End Sub
+
+Public Sub SetBlueBold()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    With Selection.Font
+        .Color = RGB(0, 176, 240)
+        .Bold = True
+    End With
+
+End Sub
+
+Public Sub ResetFont()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    With Selection.Font
+        .Color = vbBlack
+        .Bold = False
+    End With
+
+End Sub
+
+
+
+
+'========================================
+' Mod_Key2Val.bas
+'========================================
+
+' @Feature: KeyLookup
+' @Section: Worker
+' @Role: Getter
+' @Summary: 指定されたWorkbook / Worksheet上で、キー列と戻り列を解決し、キーに対応する値を返す
+' @Status: Review
+Function GetValueByKey( _
+    key As String, _
+    wsName As String, _
+    Optional keyColumnSpec As String = "[KEY]", _
+    Optional returnColumnSpec As String = "[VAL]", _
+    Optional errorValue As String = "#VALUE!", _
+    Optional wbName As String = "" _
+) As String
+
+    Dim resolvedWbName As String
+    Dim wbActive As Workbook
+    Set wbActive = RequireCurrentWorkbook()
+    
+    resolvedWbName = IIf(wbName = "", wbActive.Name, wbName)
+
+    If Not WorkbookExists(resolvedWbName) Then
+        GetValueByKey = errorValue
+        Exit Function
+    End If
+    
+    Dim wb As Workbook
+    Set wb = Workbooks(resolvedWbName)
+    
+    If Not WorksheetExists(wsName, wb) Then
+        GetValueByKey = errorValue
+        Exit Function
+    End If
+
+    ' 列指定文字列を列番号へ変換
+    Dim keyColumn As Long
+    Dim returnColumn As Long
+
+    keyColumn = ResolveColumn( _
+        keyColumnSpec, _
+        wsName, _
+        resolvedWbName _
+    )
+
+    returnColumn = ResolveColumn( _
+        returnColumnSpec, _
+        wsName, _
+        resolvedWbName _
+    )
+
+    If keyColumn = 0 Or returnColumn = 0 Then
+        GetValueByKey = errorValue
+        Exit Function
+    End If
+
+    GetValueByKey = fGetCellData_to_GetCellData( _
+        resolvedWbName, _
+        wsName, _
+        key, _
+        keyColumn, _
+        returnColumn, _
+        errorValue _
+    )
+    
+
+End Function
+
+' @Feature: KeyLookup
+' @Section: Worker
+' @Role: Resolver
+' @Summary: 列指定文字列を指定Workbook / Worksheet上の列番号へ解決する
+' @Status: Review
+Private Function ResolveColumn( _
+    ByVal columnSpec As String, _
+    ByVal wsName As String, _
+    ByVal wbName As String _
+) As Long
+
+    If Len(columnSpec) = 0 Then Exit Function
+
+    If Left$(columnSpec, 1) = "[" Then
+
+        If Right$(columnSpec, 1) <> "]" Then Exit Function
+        If Len(columnSpec) <= 2 Then Exit Function
+
+        ResolveColumn = fSearchField_fPg_searchCol_to_FindColumnByHeader( _
+            Mid$(columnSpec, 2, Len(columnSpec) - 2), _
+            wsName, _
+            wbName _
+        )
+
+    Else
+
+        ResolveColumn = Workbooks(wbName) _
+            .Worksheets(wsName) _
+            .Columns(columnSpec) _
+            .column
+
+    End If
+
+End Function
+
+' @Feature: KeyLookup
+' @Section: Worker
+' @Role: Getter
+' @Summary: 実データ取得
+' @Status: Review
+Private Function fGetCellData_to_GetCellData( _
+    wbName As String, _
+    wsName As String, _
+    key As String, _
+    keyColumn As Long, _
+    returnColumn As Long, _
+    Optional errorValue As String = "#VALUE!" _
+) As String
+
+    Dim keyColumnRange As Range
+    Dim matchRow As Variant
+
+    With Workbooks(wbName).Worksheets(wsName)
+
+        Set keyColumnRange = .Columns(keyColumn)
+
+        matchRow = Application.match(key, keyColumnRange, 0)
+
+        If Not IsError(matchRow) Then
+            fGetCellData_to_GetCellData = _
+                .Cells(CLng(matchRow), returnColumn).Value
+        Else
+            fGetCellData_to_GetCellData = errorValue
+        End If
+
+    End With
+
+End Function
+
+
+
+'========================================
+' Mod_keybind_settings.bas
+'========================================
+
+
+'==================================================
+' Public Entry
+'==================================================
+
+' @Feature: KeyBind
+' @Section: Settings
+' @Role: Setter
+' @Summary: 全KeyBindを設定する
+' @Status: Keep
+Public Sub SetKeyBind()
+
+    ClearKeyBind
+
+    ApplyKeyBinds KeyBinds_LinkSheet()
+    ApplyKeyBinds KeyBinds_Color()
+    ApplyKeyBinds KeyBinds_Window()
+    ApplyKeyBinds KeyBinds_SetParam()
+    ApplyKeyBinds KeyBinds_RowExpand()
+    ApplyKeyBinds KeyBinds_EditRange()
+    ApplyKeyBinds KeyBinds_Util()
+    ApplyKeyBinds KeyBinds_FnSheet()
+    ApplyKeyBinds KeyBinds_Tag()
+    ApplyKeyBinds KeyBinds_ExDSL()
+
+End Sub
+
+
+' @Feature: KeyBind
+' @Section: Settings
+' @Role: Reset
+' @Summary: 全KeyBindを解除してExcel標準動作へ戻す
+' @Status: Keep
+Public Sub ClearKeyBind()
+
+    ClearKeyBinds KeyBinds_LinkSheet()
+    ClearKeyBinds KeyBinds_Color()
+    ClearKeyBinds KeyBinds_Window()
+    ClearKeyBinds KeyBinds_SetParam()
+    ClearKeyBinds KeyBinds_RowExpand()
+    ClearKeyBinds KeyBinds_EditRange()
+    ClearKeyBinds KeyBinds_Util()
+    ClearKeyBinds KeyBinds_FnSheet()
+    ClearKeyBinds KeyBinds_Tag()
+    ClearKeyBinds KeyBinds_ExDSL()
+
+End Sub
+
+
+'==================================================
+' Worker
+'==================================================
+
+Private Sub ApplyKeyBinds( _
+    ByVal binds As Variant _
+)
+
+    Dim item As Variant
+
+    For Each item In binds
+
+        Application.OnKey _
+            CStr(item(0)), _
+            CStr(item(1))
+
+    Next item
+
+End Sub
+
+
+Private Sub ClearKeyBinds( _
+    ByVal binds As Variant _
+)
+
+    Dim item As Variant
+
+    For Each item In binds
+
+        ' 第2引数省略
+        ' → 独自割当を解除して標準動作へ戻す
+        Application.OnKey CStr(item(0))
+
+    Next item
+
+End Sub
+
+
+'==================================================
+' KeyBind Definitions
+'==================================================
+
+Private Function KeyBinds_LinkSheet() As Variant
+
+    KeyBinds_LinkSheet = Array( _
+        Array("+^%u", "RenameSheetAndUpdateLinks"), _
+        Array("+^%d", "DeleteLinkSheet"), _
+        Array("+^%m", "JumpOrCreateSheetFromLink_Move"), _
+        Array("+^%o", "JumpOrCreateSheetFromLink_Open") _
+    )
+
+End Function
+
+
+Private Function KeyBinds_Color() As Variant
+
+    KeyBinds_Color = Array( _
+        Array("^+r", "SetRedBold"), _
+        Array("^+b", "SetBlueBold"), _
+        Array("+^c", "ResetFont"), _
+        Array("+%^r", "HighlightFromClipboard_Red") _
+    )
+
+End Function
+
+
+Private Function KeyBinds_Window() As Variant
+
+    KeyBinds_Window = Array( _
+        Array("+^%n", "OpenNewWindow") _
+    )
+
+End Function
+
+
+Private Function KeyBinds_SetParam() As Variant
+
+    KeyBinds_SetParam = Array( _
+        Array("+^%b", "SetCurrentBookName"), _
+        Array("+^%s", "SetCurrentSheet"), _
+        Array("+^%h", "SelectCurrentSheet") _
+    )
+
+End Function
+
+
+Private Function KeyBinds_RowExpand() As Variant
+
+    KeyBinds_RowExpand = Array( _
+        Array("^+h", "Hidden_rows"), _
+        Array("^+e", "Expand_rows") _
+    )
+
+End Function
+
+
+Private Function KeyBinds_EditRange() As Variant
+
+    KeyBinds_EditRange = Array( _
+        Array("+%{DOWN}", "InsertRange_Down"), _
+        Array("+%{RIGHT}", "InsertRange_Right"), _
+        Array("+%{LEFT}", "InsertRange_Left"), _
+        Array("+%{UP}", "InsertRange_Up"), _
+        Array("+^%{DOWN}", "InsertRow_Down"), _
+        Array("+^%{UP}", "DeleteRow_Up"), _
+        Array("+^%{LEFT}", "DeleteCol_Left"), _
+        Array("+^%{RIGHT}", "InsertCol_Right"), _
+        Array("+^a", "RefreshSelectedFormulas") _
+    )
+
+End Function
+
+
+Private Function KeyBinds_Util() As Variant
+
+    KeyBinds_Util = Array( _
+        Array("^u", "ToggleUIMode"), _
+        Array("^t", "ToggleTopMode") _
+    )
+
+End Function
+
+
+Private Function KeyBinds_FnSheet() As Variant
+
+    KeyBinds_FnSheet = Array( _
+        Array("^+%{F1}", "SelectF1Sht"), _
+        Array("^+%{F2}", "SelectF2Sht"), _
+        Array("^+%{F3}", "SelectF3Sht"), _
+        Array("^+%{F4}", "SelectF4Sht"), _
+        Array("^+%{F5}", "SelectF5Sht"), _
+        Array("^+%{F6}", "SelectF6Sht"), _
+        Array("^+%{F7}", "SelectF7Sht"), _
+        Array("^+%{F8}", "SelectF8Sht"), _
+        Array("^+%{F9}", "SelectF9Sht"), _
+        Array("^+%{F10}", "SelectF10Sht"), _
+        Array("^+%{F11}", "SelectF11Sht"), _
+        Array("^+%{F12}", "SelectF12Sht") _
+    )
+
+End Function
+
+Private Function KeyBinds_ExDSL() As Variant
+
+    KeyBinds_ExDSL = Array( _
+        Array("^+%~", "RunMacroFromSelection") _
+    )
+
+End Function
+
+Private Function KeyBinds_Tag() As Variant
+
+    KeyBinds_Tag = Array( _
+        Array("+^%t", "EditActiveTagAndReplaceAll") _
+    )
+
+End Function
+
+
+
+'========================================
+' Mod_MacroMaintenance.bas
+'========================================
+
+
+Public Sub BuildCombinedBas( _
+    ByVal folderPath As String, _
+    ByVal outputFileName As String _
+)
+
+    If Right$(folderPath, 1) <> "\" Then
+        folderPath = folderPath & "\"
+    End If
+
+    Dim outputPath As String
+    outputPath = folderPath & outputFileName
+
+    Dim outNo As Integer
+    outNo = FreeFile
+
+    Open outputPath For Output As #outNo
+
+    On Error GoTo ERR_HANDLER
+
+    Print #outNo, "Option Explicit"
+    Print #outNo, vbCrLf
+
+    ' Entry系
+    AppendBasGroup _
+        outNo, _
+        folderPath, _
+        True, _
+        outputFileName
+
+    ' その他
+    AppendBasGroup _
+        outNo, _
+        folderPath, _
+        False, _
+        outputFileName
+
+    Close #outNo
+
+    ShowStatus "BAS結合完了: " & outputPath
+
+    Exit Sub
+
+
+ERR_HANDLER:
+
+    Dim errNumber As Long
+    Dim errDescription As String
+
+    errNumber = Err.Number
+    errDescription = Err.Description
+
+    On Error Resume Next
+    Close #outNo
+    On Error GoTo 0
+
+    RaiseStatusError _
+        errNumber, _
+        "BuildCombinedBas", _
+        errDescription
+
+End Sub
+
+
+Private Sub AppendBasGroup( _
+    ByVal outNo As Integer, _
+    ByVal folderPath As String, _
+    ByVal isEntry As Boolean, _
+    ByVal excludeFileName As String _
+)
+
+    Dim fileName As String
+
+    fileName = Dir$(folderPath & "*.bas")
+
+    Do While Len(fileName) > 0
+
+        ' 出力中の結合ファイル自身は除外
+        If StrComp( _
+            fileName, _
+            excludeFileName, _
+            vbTextCompare _
+        ) <> 0 Then
+
+            If IsEntryModuleFile(fileName) = isEntry Then
+            
+                AppendBasFile _
+                    outNo, _
+                    folderPath & fileName, _
+                    fileName
+
+            End If
+
+        End If
+
+        fileName = Dir$
+
+    Loop
+
+End Sub
+
+
+Private Function IsEntryModuleFile( _
+    ByVal fileName As String _
+) As Boolean
+
+    Select Case fileName
+
+        Case _
+            "Entry_Config.bas", _
+            "Entry_Const.bas", _
+            "Entry_KeyBind.bas", _
+            "Entry_Main.bas"
+
+            IsEntryModuleFile = True
+
+    End Select
+
+End Function
+
+
+Private Sub AppendBasFile( _
+    ByVal outNo As Integer, _
+    ByVal filePath As String, _
+    ByVal fileName As String _
+)
+
+    Dim fileNo As Integer
+    fileNo = FreeFile
+
+    Open filePath For Input As #fileNo
+
+    On Error GoTo ERR_HANDLER
+
+    Print #outNo, "'========================================"
+    Print #outNo, "' " & fileName
+    Print #outNo, "'========================================"
+
+    Dim lineText As String
+
+    Do Until EOF(fileNo)
+
+        Line Input #fileNo, lineText
+
+        If Left$(lineText, 17) <> "Attribute VB_Name" _
+            And Trim$(lineText) <> "Option Explicit" Then
+
+            Print #outNo, lineText
+
+        End If
+
+    Loop
+
+    Close #fileNo
+
+    Print #outNo, vbCrLf
+
+    Exit Sub
+
+
+ERR_HANDLER:
+
+    Dim errNumber As Long
+    Dim errDescription As String
+
+    errNumber = Err.Number
+    errDescription = Err.Description
+
+    On Error Resume Next
+    Close #fileNo
+    On Error GoTo 0
+
+    RaiseStatusError _
+        errNumber, _
+        "AppendBasFile", _
+        errDescription
+
+End Sub
+
+
+
+'========================================
+' Mod_Regex_Helper.bas
+'========================================
+
+' @Feature: RegExp
+' @Section: Helper
+' @Role: Replace
+' @Summary: 正規表現パターンに一致する文字列を置換する
+' @Status: Keep
+Public Function RegexReplace( _
+    ByVal target As Variant, _
+    ByVal pattern As String, _
+    ByVal replaceText As String _
+) As String
+
+    Dim regEx As Object
+    Set regEx = CreateObject("VBScript.RegExp")
+
+    With regEx
+        .pattern = pattern
+        .Global = True
+        .IgnoreCase = True
+    End With
+
+    RegexReplace = regEx.Replace( _
+        CStr(target), _
+        replaceText _
+    )
+
+End Function
+
+' @Feature: RegExp
+' @Section: Helper
+' @Role: Extract
+' @Summary: 正規表現に一致した文字列を抽出して結合する
+' @Status: Keep
+Public Function RegexExtract( _
+    ByVal target As Variant, _
+    ByVal pattern As String, _
+    Optional ByVal joinDelimiter As String = "" _
+) As String
+
+    Dim regEx As Object
+    Set regEx = CreateObject("VBScript.RegExp")
+
+    With regEx
+        .pattern = pattern
+        .Global = True
+        .IgnoreCase = True
+    End With
+
+    Dim matches As Object
+    Set matches = regEx.Execute(CStr(target))
+
+    Dim matchItem As Object
+    Dim Result As String
+
+    For Each matchItem In matches
+
+        If Len(Result) > 0 Then
+            Result = Result & joinDelimiter
+        End If
+
+        Result = Result & matchItem.Value
+
+    Next matchItem
+
+    RegexExtract = Result
+
+End Function
+
+' @Feature: RegExp
+' @Section: Helper
+' @Role: Escape
+' @Summary: 文字列を正規表現リテラルとして使用できるようエスケープする
+' @Status: Keep
+Public Function EscapeRegExp( _
+    ByVal text As String _
+) As String
+
+    Dim Result As String
+    Result = text
+
+    Result = Replace(Result, "\", "\\")
+    Result = Replace(Result, ".", "\.")
+    Result = Replace(Result, "+", "\+")
+    Result = Replace(Result, "*", "\*")
+    Result = Replace(Result, "?", "\?")
+    Result = Replace(Result, "^", "\^")
+    Result = Replace(Result, "$", "\$")
+    Result = Replace(Result, "(", "\(")
+    Result = Replace(Result, ")", "\)")
+    Result = Replace(Result, "{", "\{")
+    Result = Replace(Result, "}", "\}")
+    Result = Replace(Result, "|", "\|")
+    Result = Replace(Result, "[", "\[")
+    Result = Replace(Result, "]", "\]")
+
+    EscapeRegExp = Result
+
+End Function
+
+
+
+
+'========================================
+' Mod_Sql_ExcelDb.bas
+'========================================
+
+'==================================================
+' Excel DB Query
+'==================================================
+
+Public Function ExecuteExcelQuery( _
+    ByVal dataFilePath As String, _
+    ByVal sqlQuery As String _
+) As ADODB.Recordset
+
+    If Len(Trim$(sqlQuery)) = 0 Then
+
+        RaiseStatusError _
+            vbObjectError + 1500, _
+            "ExecuteExcelQuery", _
+            "SQL query is empty."
+
+    End If
+
+
+    If Len(Dir$(dataFilePath)) = 0 Then
+
+        RaiseStatusError _
+            vbObjectError + 1501, _
+            "ExecuteExcelQuery", _
+            "Data file not found: " & dataFilePath
+
+    End If
+
+
+    Dim cn As ADODB.Connection
+    Dim rs As ADODB.Recordset
+    
+    Set cn = New ADODB.Connection
+    Set rs = New ADODB.Recordset
+
+
+    On Error GoTo ERR_HANDLER
+
+
+    cn.ConnectionString = BuildExcelConnectionString(dataFilePath)
+
+
+    cn.Open
+
+
+    ' RecordsetをConnectionから切り離して返すためClient Cursor
+    rs.CursorLocation = adUseClient
+    rs.CursorType = adOpenStatic
+    rs.LockType = adLockReadOnly
+
+    Set rs.ActiveConnection = cn
+
+    rs.Open sqlQuery
+
+
+    ' 呼び出し元がConnectionを管理しなくてよいよう切断
+    Set rs.ActiveConnection = Nothing
+
+    cn.Close
+    Set cn = Nothing
+
+
+    Set ExecuteExcelQuery = rs
+
+    Exit Function
+
+
+ERR_HANDLER:
+
+    Dim errorNumber As Long
+    Dim errorDescription As String
+
+    errorNumber = Err.Number
+    errorDescription = Err.Description
+
+
+    On Error Resume Next
+
+    If Not rs Is Nothing Then
+        If rs.State <> 0 Then rs.Close
+    End If
+
+    If Not cn Is Nothing Then
+        If cn.State <> 0 Then cn.Close
+    End If
+
+    On Error GoTo 0
+
+
+    RaiseStatusError _
+        errorNumber, _
+        "ExecuteExcelQuery", _
+        errorDescription
+
+End Function
+
+Private Function BuildExcelConnectionString( _
+    ByVal dataFilePath As String _
+) As String
+
+    BuildExcelConnectionString = _
+        "Provider=Microsoft.ACE.OLEDB.12.0;" & _
+        "Data Source=" & dataFilePath & ";" & _
+        "Extended Properties=""" & _
+            GetExcelExtendedProperties(dataFilePath) & _
+        """;"
+
+End Function
+
+Private Function GetExcelExtendedProperties( _
+    ByVal dataFilePath As String _
+) As String
+
+    Dim ext As String
+
+    ext = LCase$(Mid$( _
+        dataFilePath, _
+        InStrRev(dataFilePath, ".") + 1 _
+    ))
+
+    Select Case ext
+
+        Case "xlsx"
+            GetExcelExtendedProperties = _
+                "Excel 12.0 Xml;HDR=YES"
+
+        Case "xlsm"
+            GetExcelExtendedProperties = _
+                "Excel 12.0 Macro;HDR=YES"
+
+        Case "xls"
+            GetExcelExtendedProperties = _
+                "Excel 8.0;HDR=YES"
+
+        Case Else
+            RaiseStatusError _
+                vbObjectError + 1500, _
+                "GetExcelExtendedProperties", _
+                "未対応のExcel形式です: " & ext
+
+    End Select
+
+End Function
+
+
+
+'========================================
+' Mod_Sql_Worksheet.bas
+'========================================
+
+'==================================================
+' Query Flow
+'==================================================
+
+Public Sub RunSqlToSheet( _
+    ByVal SheetName As String, _
+    ByVal sqlQuery As String _
+)
+
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook
+    
+    wb.Save
+
+    If Not WorksheetExists(SheetName, wb) Then
+
+        RaiseStatusError _
+            vbObjectError + 1510, _
+            "RunSqlToSheet", _
+            "Worksheet not found: " & SheetName
+
+    End If
+
+
+    If Len(wb.Path) = 0 Then
+
+        RaiseStatusError _
+            vbObjectError + 1511, _
+            "RunSqlToSheet", _
+            "Workbook must be saved before executing SQL."
+
+    End If
+
+
+    Dim dataFilePath As String
+
+    dataFilePath = _
+        wb.Path & _
+        Application.PathSeparator & _
+        wb.Name
+
+    Application.ScreenUpdating = False
+
+    On Error GoTo ERR_HANDLER
+
+
+    Dim rs As ADODB.Recordset
+    Set rs = New ADODB.Recordset
+
+    Set rs = ExecuteExcelQuery( _
+        dataFilePath, _
+        sqlQuery _
+    )
+
+
+    If rs.BOF And rs.EOF Then
+
+        Debug.Print "SQL: No results"
+
+        rs.Close
+        Set rs = Nothing
+
+        Application.ScreenUpdating = True
+
+        Exit Sub
+
+    End If
+
+
+    OutputSqlResultToWorksheet _
+        rs, _
+        wb.Worksheets(SheetName)
+
+
+    rs.Close
+    Set rs = Nothing
+
+    Application.ScreenUpdating = True
+
+    Exit Sub
+
+
+ERR_HANDLER:
+
+    Application.ScreenUpdating = True
+
+    RaiseStatusError _
+        Err.Number, _
+        "RunSqlToSheet", _
+        Err.Description
+
+End Sub
+
+'==================================================
+' SQL Result Output
+'==================================================
+
+Public Sub OutputSqlResultToWorksheet( _
+    ByVal rs As Object, _
+    ByVal ws As Worksheet _
+)
+
+    If rs Is Nothing Then Exit Sub
+
+
+    ws.Cells.Clear
+
+
+    '----------------------------------
+    ' Header
+    '----------------------------------
+
+    Dim columnIndex As Long
+
+    For columnIndex = 0 To rs.Fields.Count - 1
+
+        ws.Cells(1, columnIndex + 1).Value = _
+            rs.Fields(columnIndex).Name
+
+    Next columnIndex
+
+
+    '----------------------------------
+    ' Data
+    '----------------------------------
+
+    If Not (rs.BOF And rs.EOF) Then
+
+        ws.Cells(2, 1).CopyFromRecordset rs
+
+    End If
+
+
+    ws.Columns.AutoFit
+
+End Sub
+
+
+
+'========================================
+' Mod_Vbe_Maintenance.bas
+'========================================
+
+'==================================================
+' BAS Export
+'==================================================
+
+Private Function gBasExportPath()
+    Stop
+    gBasExportPath = "C:\Users\thaya\OneDrive\ドキュメント\00_管理ブック\BasExport"
+
+End Function
+
+
+' @Feature: VBE
+' @Section: Maintenance
+' @Role: Export
+' @Summary: Workbook内の標準ModuleをBASとしてExportする
+' @Status: Keep
+Public Sub ExportBas( _
+    Optional ByVal folderPath As String = "" _
+)
+
+    If Len(folderPath) = 0 Then
+        folderPath = gBasExportPath
+    End If
+
+    If Right$(folderPath, 1) <> "\" Then
+        folderPath = folderPath & "\"
+    End If
+
+
+    Dim comp As Object
+
+    For Each comp In ThisWorkbook.VBProject.VBComponents
+
+        ' 1 = vbext_ct_StdModule
+        If comp.Type = 1 Then
+
+            comp.Export _
+                folderPath & _
+                comp.Name & _
+                ".bas"
+
+        End If
+
+    Next comp
+    
+    ShowStatus "Export Finish"
+
+End Sub
+
+
+
+'========================================
+' Mod_Worksheet_API.bas
+'========================================
+
+' @Feature: KeyLookup
+' @Section: Worker
+' @Role: Worker
+' @Summary: ラッパー
+' @Status: Fixed
+Public Function fKey2Val( _
+    ByVal key As String, _
+    ByVal wsName As String, _
+    Optional keyColumnSpec As String = "[KEY]", _
+    Optional returnColumnSpec As String = "[VAL]", _
+    Optional errorValue As String = "#VALUE!", _
+    Optional wbName As String = "" _
+) As String
+
+    fKey2Val = GetValueByKey( _
+        key, _
+        wsName, _
+        keyColumnSpec, _
+        returnColumnSpec, _
+        errorValue, _
+        wbName _
+    )
+
+End Function
+
+' @Feature: KeyLookup
+' @Section: Worker
+' @Role: Worker
+' @Summary: fKey2Val_asを実行する
+' @Status: Fix
+Public Function fKey2Val_as( _
+    key As String, _
+    Optional keyColumnSpec As String = "[KEY]", _
+    Optional returnColumnSpec As String = "[VAL]", _
+    Optional errorValue As String = "#VALUE!" _
+) As String
+
+    fKey2Val_as = GetValueByKey( _
+        key, _
+        ActiveSheet.Name, _
+        keyColumnSpec, _
+        returnColumnSpec, _
+        errorValue, _
+        ActiveWorkbook.Name _
+    )
+
+End Function
+
+Public Function fWsExists(ByVal Value As String) As Boolean
+
+    fWsExists = WorksheetExists(ParseLayerLink(Value), GetCurrentWorkbook)
+
+End Function
+
+'==================================================
+' Date
+'==================================================
+
+Public Function fIsData( _
+    ByVal inptRng As Range _
+) As Boolean
+
+    fIsData = _
+        IsDate(inptRng.Value) And _
+        Len(CStr(inptRng.Value)) >= 6
+
+End Function
+
+
+'==================================================
+' RegExp
+'==================================================
+
+Public Function fReplace( _
+    ByVal target As Variant, _
+    ByVal pattern As String, _
+    ByVal replaceText As String _
+) As String
+
+    On Error GoTo ERR_HANDLER
+
+    fReplace = RegexReplace( _
+        target, _
+        pattern, _
+        replaceText _
+    )
+
+    Exit Function
+
+ERR_HANDLER:
+    fReplace = ""
+
+End Function
+
+Public Function fRegxMatch( _
+    ByVal target As Variant, _
+    ByVal pattern As String, _
+    Optional ByVal joinDelimiter As String = "" _
+) As String
+
+    On Error GoTo ERR_HANDLER
+
+    fRegxMatch = RegexExtract( _
+        target, _
+        pattern, _
+        joinDelimiter _
+    )
+
+    Exit Function
+
+ERR_HANDLER:
+    fRegxMatch = ""
+
+End Function
+
+'==================================================
+' String
+'==================================================
+
+Public Function fTextJoin( _
+    ByVal delimiter As String, _
+    ByVal values As Variant _
+) As String
+
+    fTextJoin = JoinText( _
+        delimiter, _
+        values _
+    )
+
+End Function
+
+
+Public Function fSplitBetween( _
+    ByVal src As String, _
+    ByVal startStr As String, _
+    ByVal endStr As String _
+) As String
+
+    fSplitBetween = TextBetween( _
+        src, _
+        startStr, _
+        endStr _
+    )
+
+End Function
+
+
+' 1始まりで前から取得
+Public Function fSplit( _
+    ByVal txt As String, _
+    ByVal idx As Long, _
+    Optional ByVal splitter As String = "," _
+) As String
+
+    fSplit = SplitItem( _
+        txt, _
+        idx, _
+        splitter _
+    )
+
+End Function
+
+
+' 1始まりで後ろから取得
+Public Function fSplit_B( _
+    ByVal txt As String, _
+    ByVal idx As Long, _
+    Optional ByVal splitter As String = "," _
+) As String
+
+    fSplit_B = SplitItemFromEnd( _
+        txt, _
+        idx, _
+        splitter _
+    )
+
+End Function
+
+
+
+
+'========================================
+' Mod_Worksheet_Helper.bas
+'========================================
+
+Public Function fRetCellAddress(rng As Range) As String
+
+    fRetCellAddress = rng.Worksheet.Name & "!" & rng.Address
+
+End Function
+
+' @Feature: KeyLookup
+' @Section: Worker
+' @Role: Search
+' @Summary: Worksheetの1行目から指定ヘッダ名に一致する列番号を返す
+' @Status: Review
+Public Function fSearchField_fPg_searchCol_to_FindColumnByHeader( _
+    ByVal key As String, _
+    ByVal wsName As String, _
+    ByVal wbName As String _
+) As Long
+
+    Dim headerRow As Range
+    Dim matchColumn As Variant
+
+    With Workbooks(wbName).Worksheets(wsName)
+
+        Set headerRow = .rows(1)
+
+        matchColumn = Application.match(key, headerRow, 0)
+
+        If Not IsError(matchColumn) Then
+            fSearchField_fPg_searchCol_to_FindColumnByHeader = CLng(matchColumn)
+        Else
+            fSearchField_fPg_searchCol_to_FindColumnByHeader = 0
+        End If
+
+    End With
+
+
+End Function
+
+' [DEF] ワークブックが存在するか調べる
+Public Function WorkbookExists( _
+    ByVal bookName As String _
+) As Boolean
+
+    Dim wb As Workbook
+
+    On Error Resume Next
+    Set wb = Workbooks(bookName)
+    On Error GoTo 0
+
+    WorkbookExists = Not wb Is Nothing
+      
+      
+End Function
+
+' [DEF] ワークシートが存在するか調べる
+Public Function WorksheetExists( _
+    ByVal SheetName As String, _
+    ByVal wb As Workbook _
+) As Boolean
+        
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = wb.Worksheets(SheetName)
+    On Error GoTo 0
+
+    WorksheetExists = Not ws Is Nothing
+    
+End Function
+
+' @Feature: Worksheet
+' @Section: Helper
+' @Role: Factory
+' @Summary: 指定WorkbookからWorksheetを取得し、存在しない場合は新規作成して返す
+' @Status: Review
+Function GetOrCreateWorksheet( _
+    ByVal SheetName As String, _
+    ByVal wb As Workbook _
+) As Worksheet
+
+    If Len(SheetName) = 0 Then Exit Function
+    
+    Dim ws As Worksheet
+    
+    If WorksheetExists(SheetName, wb) Then
+        Set GetOrCreateWorksheet = wb.Worksheets(SheetName)
+        Exit Function
+    End If
+
+    Set ws = wb.Worksheets.Add( _
+        After:=wb.Worksheets(wb.Worksheets.Count) _
+    )
+
+    ws.Name = SheetName
+
+    Set GetOrCreateWorksheet = ws
+
+
+End Function
+
+' @Feature: WorksheetWindow
+' @Section: Worker
+' @Role: Validator / Query
+' @Summary: ワークシートが存在するか調べる
+' @Status: Replace
+' @Note: 新規WorksheetExistsへ置換
+'Function IsExistWs_to_WorksheetExists(inptShtName As String, Optional inptWb As String = "") As Boolean
+
+' WorksheetExists に入れ替え
+
+
+'    Dim sSht As String: sSht = inptShtName
+'    Dim sWb As Workbook
+'    If inptWb = "" Then
+'        Set sWb = Workbooks(p_wbName_main())
+'    Else
+'        Set sWb = Workbooks(inptWb)
+'    End If
+'
+'    Dim s As Worksheet
+'    Dim v As Variant
+'    Dim sResult As Boolean
+'
+'    sResult = False
+'
+'    For Each v In Split(inptShtName, ",")
+'        For Each s In sWb.Sheets
+'            If s.Name = CStr(v) Then
+'                sResult = True
+'            End If
+'        Next s
+'    Next v
+'
+'    IsExistWs_to_WorksheetExists = sResult
+'
+    
+'End Function
+
+Public Sub ClearListTable( _
+    ByVal headerRangeText As String _
+)
+
+    Dim headerRange As Range
+    Set headerRange = ActiveSheet.Range(headerRangeText)
+
+    Dim startRow As Long
+    Dim startCol As Long
+    Dim colCount As Long
+
+    startRow = headerRange.row + 1
+    startCol = headerRange.column
+    colCount = headerRange.Columns.Count
+
+    Dim lastRow As Long
+
+    lastRow = GetListEndRow( _
+        ActiveSheet, _
+        startRow, _
+        startCol, _
+        colCount _
+    )
+
+    If lastRow < startRow Then Exit Sub
+
+    ActiveSheet.Range( _
+        ActiveSheet.Cells(startRow, startCol), _
+        ActiveSheet.Cells(lastRow, startCol + colCount - 1) _
+    ).ClearContents
+
+End Sub
+
+' [DEF]　汎用　リスト最終位置を出力
+' @Feature: SheetMaintenance
+' @Section: Worker
+' @Role: Getter
+' @Summary: 指定開始行から下方向へ走査し、指定列範囲が全て空になる直前の行番号を返す
+' @Status: Review
+Public Function GetListEndRow( _
+    ByVal ws As Worksheet, _
+    ByVal startRow As Long, _
+    ByVal startCol As Long, _
+    ByVal colCount As Long _
+) As Long
+
+    Dim r As Long
+    Dim c As Long
+    Dim lastUsedRow As Long
+    Dim hasValue As Boolean
+
+    If WorksheetFunction.CountA(ws.Cells) = 0 Then
+        GetListEndRow = startRow - 1
+        Exit Function
+    End If
+
+    lastUsedRow = ws.UsedRange.row + ws.UsedRange.rows.Count - 1
+
+    For r = startRow To lastUsedRow
+
+        hasValue = False
+        
+        '一行に一つでも値があればデータ行とみなす
+        For c = startCol To startCol + colCount - 1
+            If Len(CStr(ws.Cells(r, c).Value)) > 0 Then
+                hasValue = True
+                Exit For
+            End If
+        Next c
+
+        If Not hasValue Then
+            GetListEndRow = r - 1
+            Exit Function
+        End If
+
+    Next r
+
+    GetListEndRow = lastUsedRow
+
+End Function
+
+Public Sub ReplaceLayerLinks( _
+    ByVal wb As Workbook, _
+    ByVal oldSheetName As String, _
+    ByVal newSheetName As String _
+)
+
+    Dim oldKeyword As String
+    Dim newKeyword As String
+
+    oldKeyword = "L[" & oldSheetName & "]"
+    newKeyword = "L[" & newSheetName & "]"
+
+    Dim ws As Worksheet
+
+    For Each ws In wb.Worksheets
+
+        Dim foundCell As Range
+        Dim firstAddress As String
+
+        With ws.UsedRange
+
+            Set foundCell = .Find( _
+                What:=oldKeyword, _
+                LookIn:=xlValues, _
+                LookAt:=xlPart _
+            )
+
+            If Not foundCell Is Nothing Then
+
+                firstAddress = foundCell.Address
+
+                Do
+
+                    foundCell.Value = Replace( _
+                        CStr(foundCell.Value), _
+                        oldKeyword, _
+                        newKeyword _
+                    )
+
+                    Set foundCell = .FindNext(foundCell)
+
+                    If foundCell Is Nothing Then Exit Do
+
+                Loop While foundCell.Address <> firstAddress
+
+            End If
+
+        End With
+
+    Next ws
+
+End Sub
+
+Public Function ResolveLayerSheetName( _
+    ByVal Value As String _
+) As String
+
+    Dim SheetName As String
+    SheetName = ParseLayerLink(Value)
+
+    If Len(SheetName) > 0 Then
+        ResolveLayerSheetName = SheetName
+    Else
+        ResolveLayerSheetName = Value
+    End If
+
+End Function
+
+'==================================================
+' Hierarchy
+'==================================================
+
+Public Function FindParentRow( _
+    ByVal ws As Worksheet, _
+    ByVal startRow As Long, _
+    ByVal parentCol As Long _
+) As Long
+
+    Dim rowIndex As Long
+
+    For rowIndex = startRow To 1 Step -1
+
+        If Len(CStr( _
+            ws.Cells(rowIndex, parentCol).Value _
+        )) > 0 Then
+
+            FindParentRow = rowIndex
+            Exit Function
+
+        End If
+
+    Next rowIndex
+
+End Function
+
+
+Public Function FindHierarchyEndRow( _
+    ByVal ws As Worksheet, _
+    ByVal parentRow As Long, _
+    ByVal parentCol As Long _
+) As Long
+
+    Dim rowIndex As Long
+
+    For rowIndex = parentRow + 1 To ws.rows.Count
+
+        If Len(CStr( _
+            ws.Cells(rowIndex, parentCol).Value _
+        )) > 0 Then
+
+            FindHierarchyEndRow = rowIndex - 1
+            Exit Function
+
+        End If
+
+    Next rowIndex
+
+
+    FindHierarchyEndRow = ws.rows.Count
+
+End Function
+
+
+'==================================================
+' Border
+'==================================================
+
+Public Sub SetDoubleBorder( _
+    ByVal ws As Worksheet, _
+    ByVal rowIndex As Long, _
+    ByVal targetCol As Long _
+)
+
+    With ws.Cells( _
+        rowIndex, _
+        targetCol _
+    ).Borders(xlEdgeBottom)
+
+        .LineStyle = xlDouble
+        .Weight = xlMedium
+
+    End With
+
+End Sub
+
+
+Public Sub ClearDoubleBorder( _
+    ByVal ws As Worksheet, _
+    ByVal rowIndex As Long, _
+    ByVal targetCol As Long _
+)
+
+    ws.Cells( _
+        rowIndex, _
+        targetCol _
+    ).Borders(xlEdgeBottom).LineStyle = xlNone
+
+End Sub
+
+
+Public Function JoinText( _
+    ByVal delimiter As String, _
+    ByVal values As Variant _
+) As String
+
+    JoinText = _
+        WorksheetFunction.TextJoin( _
+            delimiter, _
+            True, _
+            values _
+        )
+
+End Function
+
+
+Public Function TextBetween( _
+    ByVal src As String, _
+    ByVal startStr As String, _
+    ByVal endStr As String _
+) As String
+
+    Dim startPos As Long
+    Dim endPos As Long
+
+    startPos = InStr( _
+        1, _
+        src, _
+        startStr, _
+        vbBinaryCompare _
+    )
+
+    If startPos = 0 Then Exit Function
+
+    startPos = startPos + Len(startStr)
+
+    endPos = InStr( _
+        startPos, _
+        src, _
+        endStr, _
+        vbBinaryCompare _
+    )
+
+    If endPos = 0 Then Exit Function
+
+    TextBetween = Mid$( _
+        src, _
+        startPos, _
+        endPos - startPos _
+    )
+
+End Function
+
+
+' 1始まりで前から取得
+Public Function SplitItem( _
+    ByVal txt As String, _
+    ByVal index As Long, _
+    Optional ByVal delimiter As String = "," _
+) As String
+
+    If Len(txt) = 0 Then Exit Function
+    If index <= 0 Then Exit Function
+
+    Dim values As Variant
+    values = Split(txt, delimiter)
+
+    Dim arrayIndex As Long
+    arrayIndex = LBound(values) + index - 1
+
+    If arrayIndex > UBound(values) Then Exit Function
+
+    SplitItem = CStr(values(arrayIndex))
+
+End Function
+
+
+' 1始まりで後ろから取得
+Public Function SplitItemFromEnd( _
+    ByVal txt As String, _
+    ByVal index As Long, _
+    Optional ByVal delimiter As String = "," _
+) As String
+
+    If Len(txt) = 0 Then Exit Function
+    If index <= 0 Then Exit Function
+
+    Dim values As Variant
+    values = Split(txt, delimiter)
+
+    Dim arrayIndex As Long
+    arrayIndex = UBound(values) - index + 1
+
+    If arrayIndex < LBound(values) Then Exit Function
+
+    SplitItemFromEnd = CStr(values(arrayIndex))
+
+End Function
+
+Public Function GetHeaderMap( _
+    ByVal ws As Worksheet, _
+    ByVal headerRow As Long, _
+    ByVal startCol As Long _
+) As Object
+
+    Dim Result As Object
+    Set Result = CreateObject("Scripting.Dictionary")
+
+
+    Dim lastCol As Long
+
+    lastCol = ws.Cells( _
+        headerRow, _
+        ws.Columns.Count _
+    ).End(xlToLeft).column
+
+
+    Dim columnIndex As Long
+
+    For columnIndex = startCol To lastCol
+
+        Dim headerName As String
+
+        headerName = Trim$(CStr( _
+            ws.Cells( _
+                headerRow, _
+                columnIndex _
+            ).Value _
+        ))
+
+
+        If Len(headerName) > 0 Then
+
+            If Not Result.Exists(headerName) Then
+
+                Result.Add _
+                    headerName, _
+                    columnIndex
+
+            End If
+
+        End If
+
+    Next columnIndex
+
+
+    Set GetHeaderMap = Result
+
+End Function
+
+' @Feature: Worksheet
+' @Section: Hyperlink
+' @Role: Resolver
+' @Summary: HyperlinkのSubAddressをWorksheet Rangeへ解決する
+' @Status: Keep
+Public Function GetCellFromSubAddress( _
+    ByVal wb As Workbook, _
+    ByVal subAddressText As String _
+) As Range
+
+    Dim posSeparator As Long
+
+    posSeparator = InStr( _
+        1, _
+        subAddressText, _
+        "!", _
+        vbTextCompare _
+    )
+
+    If posSeparator = 0 Then Exit Function
+
+
+    Dim SheetName As String
+    Dim cellAddress As String
+
+    SheetName = Left$( _
+        subAddressText, _
+        posSeparator - 1 _
+    )
+
+    cellAddress = Mid$( _
+        subAddressText, _
+        posSeparator + 1 _
+    )
+
+
+    ' 'Sheet Name'!A1
+    If Left$(SheetName, 1) = "'" _
+        And Right$(SheetName, 1) = "'" Then
+
+        SheetName = Mid$( _
+            SheetName, _
+            2, _
+            Len(SheetName) - 2 _
+        )
+
+        SheetName = Replace( _
+            SheetName, _
+            "''", _
+            "'" _
+        )
+
+    End If
+
+
+    If Not WorksheetExists(SheetName, wb) Then
+        Exit Function
+    End If
+
+
+    Set GetCellFromSubAddress = _
+        wb.Worksheets(SheetName).Range(cellAddress)
+
+End Function
+
+
+'========================================
+' Mod_Worksheet_KeyBInd.bas
+'========================================
+
+' @Feature: WorksheetWindow
+' @Section: Flow
+' @Role: Command
+' @Summary: NewWindowを開く
+' @Status: Review
+Public Sub OpenNewWindow()
+    ActiveWorkbook.newWindow
+End Sub
+
+' @Feature: WorksheetWindow
+' @Section: Flow
+' @Role: Command / Wrapper 候補
+' @Summary: 指定シートを新しいウィンドウで表示
+' @Status: Review
+Sub OpenNewTargetSheet( _
+    ByVal SheetName As String _
+)
+
+    Dim wb As Workbook
+    Set wb = ActiveWorkbook
+
+    Dim sourceWindow As Window
+    Set sourceWindow = ActiveWindow
+
+    Dim targetSheet As Worksheet
+    Set targetSheet = wb.Worksheets(SheetName)
+
+    Dim newWindow As Window
+    Set newWindow = sourceWindow.newWindow
+
+    newWindow.Activate
+    targetSheet.Activate
+
+End Sub
+
+Private Sub SavePreviousSheet( _
+    ByVal wb As Workbook, _
+    ByVal SheetName As String _
+)
+
+    wb.Names.Add _
+        Name:="JumpOrCreateSheetFromLink_PrevSheet", _
+        RefersTo:="=""" & Replace(SheetName, """", """""") & """"
+
+End Sub
+
+Private Function TryGetPrevSheetName() As String
+
+    On Error Resume Next
+    TryGetPrevSheetName = CStr( _
+        Evaluate("JumpOrCreateSheetFromLink_PrevSheet") _
+    )
+    On Error GoTo 0
+
+End Function
+
+' @Feature: WorksheetWindow
+' @Section: Flow
+' @Role: Command
+' @Summary: JumpFromPrevSheetを実行する
+' @Status: Review
+Sub JumpFromPrevSheet()
+
+    Dim prevSheet As String
+    prevSheet = TryGetPrevSheetName()
+    
+    If Len(prevSheet) = 0 Then Exit Sub
+    
+    Dim wb As Workbook
+    Set wb = ActiveWorkbook
+
+    If Not WorksheetExists(prevSheet, wb) Then Exit Sub
+
+    wb.Worksheets(prevSheet).Activate
+    
+End Sub
+
+' @Feature: Layer
+' @Section: KeyBind
+' @Role: Navigation
+' @Summary: ActiveCellのL[]リンク先Worksheetへ移動する。存在しない場合は作成する
+' @Status: Keep
+Public Sub JumpOrCreateSheetFromLink_Move()
+
+    Dim ws As Worksheet
+    Set ws = ResolveLinkedWorksheet()
+
+    If ws Is Nothing Then Exit Sub
+
+    ws.Activate
+
+End Sub
+
+' @Feature: Layer
+' @Section: KeyBind
+' @Role: Navigation
+' @Summary: ActiveCellのL[]リンク先Worksheetを新しいWindowで表示する。存在しない場合は作成する
+' @Status: Keep
+Public Sub JumpOrCreateSheetFromLink_Open()
+
+    Dim ws As Worksheet
+    Set ws = ResolveLinkedWorksheet()
+
+    If ws Is Nothing Then Exit Sub
+
+    OpenNewTargetSheet ws.Name
+
+End Sub
+
+Private Function ResolveLinkedWorksheet() As Worksheet
+
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook()
+
+    Dim SheetName As String
+    SheetName = ParseLayerLink(CStr(ActiveCell.Value))
+
+    If Len(SheetName) = 0 Then
+        ShowStatus "[L[]形式が必要です]"
+        Exit Function
+    End If
+
+    SavePreviousSheet wb, ActiveSheet.Name
+
+    Set ResolveLinkedWorksheet = _
+        GetOrCreateWorksheet(SheetName, wb)
+
+End Function
+
+' @Feature: Layer
+' @Section: Flow
+' @Role: Delete
+' @Summary: ActiveSheetを削除し、Workbook内の対応するL[]リンクを削除する
+' @Status: Keep
+Public Sub DeleteLinkSheet()
+
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook()
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Dim SheetName As String
+    SheetName = ws.Name
+
+    Dim answer As VbMsgBoxResult
+
+    answer = MsgBox( _
+        "表示中のリンクシートを削除しますか？", _
+        vbYesNo + vbQuestion, _
+        "確認" _
+    )
+
+    If answer <> vbYes Then
+        ShowStatus "削除キャンセルしました"
+        Exit Sub
+    End If
+
+    On Error GoTo ERR_HANDLER
+
+    Application.DisplayAlerts = False
+
+    ws.Delete
+
+    Application.DisplayAlerts = True
+
+    ClearLayerLinks wb, SheetName
+
+    ShowStatus SheetName & " を削除しました"
+
+    Exit Sub
+
+ERR_HANDLER:
+
+    Application.DisplayAlerts = True
+
+    RaiseStatusError _
+        Err.Number, _
+        "DeleteLinkSheet", _
+        Err.Description
+
+End Sub
+
+
+' @Feature: Layer
+' @Section: Flow
+' @Role: Replace
+' @Summary: ActiveSheetを名称変更し、Workbook内のL[]リンクを更新する
+' @Status: Keep
+Public Sub RenameSheetAndUpdateLinks()
+
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook()
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Dim oldName As String
+    oldName = ws.Name
+
+    Dim newName As String
+    newName = InputBox( _
+        "新しいシート名を入力してください", _
+        "シート名変更", _
+        oldName _
+    )
+
+    newName = Trim$(newName)
+
+    If Len(newName) = 0 Then
+        ShowStatus "処理を中止しました"
+        Exit Sub
+    End If
+
+    If newName = oldName Then Exit Sub
+
+    If WorksheetExists(newName, wb) Then
+        MsgBox "同じ名前のシートが既に存在します"
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+
+    On Error GoTo ERR_HANDLER
+
+    ws.Name = newName
+
+    ReplaceLayerLinks _
+        wb, _
+        oldName, _
+        newName
+
+    Application.ScreenUpdating = True
+
+    ShowStatus oldName & " → " & newName & _
+        " に変更し、リンクを更新しました"
+
+    Exit Sub
+
+ERR_HANDLER:
+
+    Application.ScreenUpdating = True
+
+    RaiseStatusError _
+        Err.Number, _
+        "RenameSheetAndUpdateLinks", _
+        Err.Description
+
+End Sub
+
+Private Sub ClearLayerLinks( _
+    ByVal wb As Workbook, _
+    ByVal SheetName As String _
+)
+
+    Dim keyword As String
+    keyword = "L[" & SheetName & "]"
+
+    Dim ws As Worksheet
+
+    For Each ws In wb.Worksheets
+
+        Dim foundCell As Range
+
+        With ws.UsedRange
+
+            Set foundCell = .Find( _
+                What:=keyword, _
+                LookIn:=xlValues, _
+                LookAt:=xlWhole _
+            )
+
+            Do While Not foundCell Is Nothing
+
+                foundCell.ClearContents
+
+                Set foundCell = .Find( _
+                    What:=keyword, _
+                    LookIn:=xlValues, _
+                    LookAt:=xlWhole _
+                )
+
+            Loop
+
+        End With
+
+    Next ws
+
+End Sub
+
+Private Sub SelectFnSheet( _
+    ByVal keyName As String _
+)
+
+    Dim SheetName As String
+'    SheetName = ParseLayerLink(linkText)
+    SheetName = "【KEYBIND】"
+    
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook()
+
+    If Not WorksheetExists(SheetName, wb) Then
+        ShowStatus SheetName & " Is Not Exists."
+        Exit Sub
+    End If
+    
+    Dim linkText As String
+    linkText = fKey2Val( _
+        keyName, _
+        SheetName, _
+        "A", _
+        "B" _
+    )
+
+    If Len(linkText) = 0 Then
+        ShowStatus keyName & " Is Not Exists."
+        Exit Sub
+    End If
+
+    Dim wsName As String
+    wsName = fSplitBetween(linkText, "L[", "]")
+    
+    wb.Worksheets(wsName).Activate
+
+End Sub
+
+Public Sub SelectF1Sht()
+    SelectFnSheet "F1"
+End Sub
+
+Public Sub SelectF2Sht()
+    SelectFnSheet "F2"
+End Sub
+
+Public Sub SelectF3Sht()
+    SelectFnSheet "F3"
+End Sub
+
+Public Sub SelectF4Sht()
+    SelectFnSheet "F4"
+End Sub
+
+Public Sub SelectF5Sht()
+    SelectFnSheet "F5"
+End Sub
+
+Public Sub SelectF6Sht()
+    SelectFnSheet "F6"
+End Sub
+
+Public Sub SelectF7Sht()
+    SelectFnSheet "F7"
+End Sub
+
+Public Sub SelectF8Sht()
+    SelectFnSheet "F8"
+End Sub
+
+Public Sub SelectF9Sht()
+    SelectFnSheet "F9"
+End Sub
+
+Public Sub SelectF10Sht()
+    SelectFnSheet "F10"
+End Sub
+
+Public Sub SelectF11Sht()
+    SelectFnSheet "F11"
+End Sub
+
+Public Sub SelectF12Sht()
+    SelectFnSheet "F12"
+End Sub
+
+' @Feature: WorksheetEdit
+' @Section: KeyBind
+' @Role: Command
+' @Summary: 選択範囲を左詰めで削除する
+' @Status: Keep
+Public Sub InsertRange_Left()
+
+    Selection.Delete Shift:=xlToLeft
+
+End Sub
+
+
+' @Feature: WorksheetEdit
+' @Section: KeyBind
+' @Role: Command
+' @Summary: 選択範囲を右方向へ挿入する
+' @Status: Keep
+Public Sub InsertRange_Right()
+
+    Selection.Insert _
+        Shift:=xlToRight, _
+        CopyOrigin:=xlFormatFromLeftOrAbove
+
+End Sub
+
+
+' @Feature: WorksheetEdit
+' @Section: KeyBind
+' @Role: Command
+' @Summary: 選択範囲を下方向へ挿入する
+' @Status: Keep
+Public Sub InsertRange_Down()
+
+    Selection.Insert _
+        Shift:=xlDown, _
+        CopyOrigin:=xlFormatFromLeftOrAbove
+
+End Sub
+
+
+' @Feature: WorksheetEdit
+' @Section: KeyBind
+' @Role: Command
+' @Summary: 選択範囲を上詰めで削除する
+' @Status: Keep
+Public Sub InsertRange_Up()
+
+    Selection.Delete Shift:=xlUp
+
+End Sub
+
+Public Sub InsertRow_Down()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Dim targetRow As Long
+    Dim targetCol As Long
+
+    targetRow = ActiveCell.row
+    targetCol = ActiveCell.column
+
+    Selection.EntireRow.Insert _
+        Shift:=xlDown, _
+        CopyOrigin:=xlFormatFromLeftOrAbove
+
+    ws.Cells(targetRow, targetCol).Select
+
+End Sub
+
+Public Sub DeleteRow_Up()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Dim targetRow As Long
+    Dim targetCol As Long
+
+    targetRow = Selection.row
+    targetCol = ActiveCell.column
+
+    Selection.EntireRow.Delete Shift:=xlUp
+
+    ws.Cells(targetRow, targetCol).Select
+
+End Sub
+
+Public Sub DeleteCol_Left()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Dim targetRow As Long
+    Dim targetCol As Long
+
+    targetRow = ActiveCell.row
+    targetCol = Selection.column
+
+    Selection.EntireColumn.Delete Shift:=xlToLeft
+
+    ws.Cells(targetRow, targetCol).Select
+
+End Sub
+
+
+Public Sub InsertCol_Right()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    Dim ws As Worksheet
+    Set ws = ActiveSheet
+
+    Dim targetRow As Long
+    Dim targetCol As Long
+
+    targetRow = ActiveCell.row
+    targetCol = ActiveCell.column
+
+    Selection.EntireColumn.Insert _
+        Shift:=xlToRight, _
+        CopyOrigin:=xlFormatFromLeftOrAbove
+
+    ws.Cells(targetRow, targetCol).Select
+
+End Sub
+
+Public Sub RefreshSelectedFormulas()
+
+    Selection.Replace _
+        What:="=", _
+        Replacement:="=", _
+        LookAt:=xlPart, _
+        SearchOrder:=xlByRows, _
+        MatchCase:=False, _
+        SearchFormat:=False, _
+        ReplaceFormat:=False, _
+        FormulaVersion:=xlReplaceFormula2
+
+End Sub
+
+' @Feature: WorksheetEdit
+' @Section: KeyBind
+' @Role: Move
+' @Summary: ActiveCellの行を1行上へ移動する
+' @Status: Keep
+Public Sub MoveRowUp()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+    If Selection.Cells.Count <> 1 Then Exit Sub
+
+    Dim ws As Worksheet
+    Set ws = Selection.Worksheet
+
+    Dim rowIndex As Long
+    Dim columnIndex As Long
+
+    rowIndex = Selection.row
+    columnIndex = Selection.column
+
+    If rowIndex <= 1 Then Exit Sub
+
+    ws.rows(rowIndex).Cut
+    ws.rows(rowIndex - 1).Insert Shift:=xlDown
+
+    ws.Cells(rowIndex - 1, columnIndex).Select
+
+    Application.CutCopyMode = False
+
+End Sub
+
+
+' @Feature: WorksheetEdit
+' @Section: KeyBind
+' @Role: Move
+' @Summary: ActiveCellの行を1行下へ移動する
+' @Status: Keep
+Public Sub MoveRowDown()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+    If Selection.Cells.Count <> 1 Then Exit Sub
+
+    Dim ws As Worksheet
+    Set ws = Selection.Worksheet
+
+    Dim rowIndex As Long
+    Dim columnIndex As Long
+
+    rowIndex = Selection.row
+    columnIndex = Selection.column
+
+    If rowIndex >= ws.rows.Count Then Exit Sub
+
+    ws.rows(rowIndex).Cut
+    ws.rows(rowIndex + 2).Insert Shift:=xlDown
+
+    ws.Cells(rowIndex + 1, columnIndex).Select
+
+    Application.CutCopyMode = False
+
+End Sub
+
+'==================================================
+' Hierarchy Row Expand / Collapse
+'==================================================
+
+' @Feature: WorksheetEdit
+' @Section: KeyBind
+' @Role: Collapse
+' @Summary: 選択セルの親階層配下を非表示にする
+' @Status: Keep
+Public Sub Hidden_rows()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    Dim ws As Worksheet
+    Set ws = Selection.Worksheet
+
+    Dim currentRow As Long
+    Dim currentCol As Long
+
+    currentRow = Selection.row
+    currentCol = Selection.column
+
+    If currentCol <= 1 Then
+        MsgBox "親階層がありません", vbExclamation
+        Exit Sub
+    End If
+
+
+    Dim parentCol As Long
+    parentCol = currentCol - 1
+
+
+    Dim startRow As Long
+    startRow = FindParentRow( _
+        ws, _
+        currentRow, _
+        parentCol _
+    )
+
+    If startRow = 0 Then Exit Sub
+
+
+    Dim endRow As Long
+    endRow = FindHierarchyEndRow( _
+        ws, _
+        startRow, _
+        parentCol _
+    )
+
+
+    If endRow >= startRow + 1 Then
+
+        ws.rows( _
+            (startRow + 1) & ":" & endRow _
+        ).Hidden = True
+
+    End If
+
+
+    SetDoubleBorder _
+        ws, _
+        startRow, _
+        parentCol
+
+    SetDoubleBorder _
+        ws, _
+        startRow, _
+        currentCol
+
+
+    Dim currentValue As String
+    currentValue = CStr(ws.Cells(startRow, parentCol).Value)
+
+    ws.Cells(startRow, parentCol).Value = currentValue
+
+
+End Sub
+
+
+' @Feature: WorksheetEdit
+' @Section: KeyBind
+' @Role: Expand
+' @Summary: 選択した親階層配下を再表示する
+' @Status: Keep
+Public Sub Expand_rows()
+
+    If TypeName(Selection) <> "Range" Then Exit Sub
+
+    Dim ws As Worksheet
+    Set ws = Selection.Worksheet
+
+    Dim startRow As Long
+    Dim parentCol As Long
+
+    startRow = Selection.row
+    parentCol = Selection.column
+
+
+    Dim endRow As Long
+    endRow = FindHierarchyEndRow( _
+        ws, _
+        startRow, _
+        parentCol _
+    )
+
+
+    If endRow >= startRow + 1 Then
+
+        ws.rows( _
+            (startRow + 1) & ":" & endRow _
+        ).Hidden = False
+
+    End If
+
+
+    ClearDoubleBorder _
+        ws, _
+        startRow, _
+        parentCol
+
+    ClearDoubleBorder _
+        ws, _
+        startRow, _
+        parentCol + 1
+
+
+End Sub
+
+' @Feature: Tag
+' @Section: KeyBind
+' @Role: Replace
+' @Summary: ActiveCellのTagを編集しWorkbook内の完全一致Tagを一括置換する
+' @Status: Keep
+Public Sub EditActiveTagAndReplaceAll()
+
+    Dim wb As Workbook
+    Set wb = GetCurrentWorkbook()
+
+    Dim srcCell As Range
+    Set srcCell = ActiveCell
+
+    Dim beforeText As String
+    beforeText = CStr(srcCell.Value)
+
+    If Len(beforeText) = 0 Then
+        MsgBox "アクティブセルが空です。", vbExclamation
+        Exit Sub
+    End If
+
+    If Not IsTagFormat(beforeText) Then
+
+        MsgBox _
+            "タグ形式ではありません。" & vbCrLf & _
+            "想定形式: TAG[内容]", _
+            vbExclamation
+
+        Exit Sub
+
+    End If
+
+
+    Dim tagId As String
+    tagId = GetTagId(beforeText)
+
+
+    Dim afterText As String
+
+    afterText = InputBox( _
+        Prompt:= _
+            "タグを変更してください。" & vbCrLf & _
+            "現在値: " & beforeText, _
+        Title:="タグ変更: " & tagId, _
+        Default:=beforeText _
+    )
+
+    If Len(afterText) = 0 Then Exit Sub
+
+    If afterText = beforeText Then Exit Sub
+
+
+    If Not IsTagFormat(afterText) Then
+
+        MsgBox _
+            "変更後の値がタグ形式ではありません。" & vbCrLf & _
+            "想定形式: TAG[内容]", _
+            vbExclamation
+
+        Exit Sub
+
+    End If
+
+
+    Application.ScreenUpdating = False
+
+    On Error GoTo ERR_HANDLER
+
+
+    Dim ws As Worksheet
+    Dim replaceCount As Long
+
+    For Each ws In wb.Worksheets
+    
+        Dim targetRange As Range
+        Set targetRange = ws.UsedRange
+    
+        Dim c As Range
+    
+        Set c = targetRange.Find( _
+            What:=beforeText, _
+            LookIn:=xlValues, _
+            LookAt:=xlWhole, _
+            SearchOrder:=xlByRows, _
+            SearchDirection:=xlNext, _
+            MatchCase:=False _
+        )
+    
+        Do While Not c Is Nothing
+    
+            c.Value = afterText
+            replaceCount = replaceCount + 1
+
+        Set c = targetRange.Find( _
+            What:=beforeText, _
+            LookIn:=xlValues, _
+            LookAt:=xlWhole, _
+            SearchOrder:=xlByRows, _
+            SearchDirection:=xlNext, _
+            MatchCase:=False _
+        )
+
+    Loop
+
+Next ws
+
+
+    Application.ScreenUpdating = True
+
+    ShowStatus "タグ置換完了: " & replaceCount & " セル"
+
+    Exit Sub
+
+
+ERR_HANDLER:
+
+    Application.ScreenUpdating = True
+
+    RaiseStatusError _
+        Err.Number, _
+        "EditActiveTagAndReplaceAll", _
+        Err.Description
+
+End Sub
+
+
+
+
+'========================================
+' Test_clsQuery.bas
+'========================================
+
+Public Sub Test_Query_Batch()
+
+    Test_Query_Matrix
+    Test_Query_Join_Matrix
+    Test_Query_Join_Detail_Matrix
+    Test_Query_CompositeJoin_Matrix
+    Test_Query_CompositeJoin_DifferentHeaderNames
+    Test_Query_MultiJoin
+    Test_Query_JoinThenWhere
+    Test_Query_MultiJoinThenWhere
+    Test_Query_WhereThenJoin
+    Test_Query_SelectAfterJoin
+    Test_Query_WhereSelectAfterJoin
+    Test_Query_DuplicateHeaderError
+    Test_Query_JoinKeyCountMismatch
+    Test_Query_LeftJoinKeyNotExist
+    Test_Query_RightJoinKeyNotExist
+    Test_Query_RightTableIsNothing
+    Test_Query_EmptyTable_Inner_LeftHasRows
+    Test_Query_EmptyTable_Left_LeftHasRows
+    Test_Query_EmptyTable_Right_LeftHasRows
+    Test_Query_EmptyTable_Inner_RightHasRows
+    Test_Query_EmptyTable_Left_RightHasRows
+    Test_Query_EmptyTable_Right_RightHasRows
+    Test_Query_TypeMismatch_NumberAndString
+    Test_Query_TypeMismatch_LeadingZero
+    Test_Query_TypeMismatch_Trim
+
+End Sub
+
+' 動作確認OK
+Public Sub Test_TBL_Query()
+
+    Dim tbl As cls_TBL
+    Set tbl = New cls_TBL
+
+
+    tbl.InitHeaders _
+        Array( _
+            "table", _
+            "column", _
+            "type", _
+            "status" _
+        )
+
+
+    tbl.addRow _
+        Array( _
+            "Tbl1", _
+            "COL_A", _
+            "String", _
+            "Active" _
+        )
+
+    tbl.addRow _
+        Array( _
+            "Tbl1", _
+            "COL_B", _
+            "Long", _
+            "Active" _
+        )
+
+    tbl.addRow _
+        Array( _
+            "Tbl1", _
+            "COL_C", _
+            "String", _
+            "Delete" _
+        )
+
+    tbl.addRow _
+        Array( _
+            "Tbl2", _
+            "COL_A", _
+            "String", _
+            "Active" _
+        )
+
+    tbl.addRow _
+        Array( _
+            "Tbl3", _
+            "COL_X", _
+            "Date", _
+            "Active" _
+        )
+
+
+'
+'    tbl.OutputToRange _
+'        ActiveCell
+'
+        
+
+    Dim query As cls_TBL_Query
+    Set query = tbl.CreateQuery
+
+
+    query.Where _
+        Array( _
+            Array("table", "=", "Tbl1"), _
+            Array("status", "<>", "Delete") _
+        )
+
+
+    query.SelectColumns _
+        Array( _
+            "table", _
+            "column", _
+            "type", _
+            "status" _
+        )
+
+
+    query.Result.OutputToRange _
+        ActiveCell
+        
+        
+End Sub
+
+'動作確認済み
+Sub test_IN()
+
+    Dim tbl As cls_TBL
+    Set tbl = New cls_TBL
+
+
+    tbl.InitHeaders _
+        Array( _
+            "table", _
+            "column", _
+            "type", _
+            "status" _
+        )
+
+
+    tbl.addRow _
+        Array( _
+            "Tbl1", _
+            "COL_A", _
+            "String", _
+            "Active" _
+        )
+
+    tbl.addRow _
+        Array( _
+            "Tbl1", _
+            "COL_B", _
+            "Long", _
+            "Active" _
+        )
+
+    tbl.addRow _
+        Array( _
+            "Tbl1", _
+            "COL_C", _
+            "String", _
+            "Delete" _
+        )
+
+    tbl.addRow _
+        Array( _
+            "Tbl2", _
+            "COL_A", _
+            "String", _
+            "Active" _
+        )
+
+    tbl.addRow _
+        Array( _
+            "Tbl3", _
+            "COL_X", _
+            "Date", _
+            "Active" _
+        )
+
+
+    Dim query As cls_TBL_Query
+    Set query = tbl.CreateQuery
+    
+    query.Where _
+        Array( _
+            Array( _
+                "table", _
+                "IN", _
+                Array("Tbl1", "Tbl2") _
+            ), _
+            Array( _
+                "status", _
+                "=", _
+                "Active" _
+            ) _
+        )
+    
+    query.SelectColumns _
+        Array( _
+            "table", _
+            "column", _
+            "status" _
+        )
+    
+    query.Result.OutputToRange ActiveCell
+    
+End Sub
+
+'------------------------------
+' TEST_WHERE
+'------------------------------
+
+Public Sub Test_Query_Matrix()
+
+    Dim tbl As cls_TBL
+    Set tbl = BuildQueryTestTable()
+
+    Dim testCases As Variant
+
+    testCases = Array( _
+        Array("T01", Array(Array("table", "=", "Tbl1")), 3), _
+        Array("T02", Array(Array("table", "<>", "Tbl1")), 3), _
+        Array("T03", Array(Array("table", "IN", Array("Tbl1", "Tbl2"))), 5), _
+        Array("T04", Array(Array("status", "=", "Active")), 4), _
+        Array("T05", Array(Array("table", "=", "Tbl1"), Array("status", "=", "Active")), 2), _
+        Array("T06", Array(Array("table", "IN", Array("Tbl1", "Tbl2")), Array("status", "<>", "Delete")), 4), _
+        Array("T07", Array(Array("table", "=", "NotExists")), 0), _
+        Array("T08", Array(Array("table", "IN", Array("NotExists", "Tbl3"))), 1) _
+    )
+
+
+    Dim testCase As Variant
+
+    For Each testCase In testCases
+
+        Dim testId As String
+        Dim conditions As Variant
+        Dim expectedCount As Long
+
+        testId = CStr(testCase(0))
+        conditions = testCase(1)
+        expectedCount = CLng(testCase(2))
+
+
+        Dim q As cls_TBL_Query
+        Set q = tbl.CreateQuery
+
+        q.Where conditions
+
+
+        Dim actualCount As Long
+        actualCount = q.Result.rowCount
+
+
+        Debug.Print _
+            testId, _
+            "Expected=" & expectedCount, _
+            "Actual=" & actualCount, _
+            IIf( _
+                expectedCount = actualCount, _
+                "PASS", _
+                "FAIL" _
+            )
+
+    Next testCase
+
+End Sub
+
+Private Function BuildQueryTestTable() As cls_TBL
+
+    Dim tbl As cls_TBL
+    Set tbl = New cls_TBL
+
+    tbl.InitHeaders _
+        Array( _
+            "table", _
+            "column", _
+            "type", _
+            "status" _
+        )
+
+
+    tbl.addRow _
+        Array("Tbl1", "COL_A", "String", "Active")
+
+    tbl.addRow _
+        Array("Tbl1", "COL_B", "Long", "Active")
+
+    tbl.addRow _
+        Array("Tbl1", "COL_C", "String", "Delete")
+
+    tbl.addRow _
+        Array("Tbl2", "COL_A", "String", "Active")
+
+    tbl.addRow _
+        Array("Tbl2", "COL_D", "Date", "Hold")
+
+    tbl.addRow _
+        Array("Tbl3", "COL_X", "Date", "Active")
+
+
+    Set BuildQueryTestTable = tbl
+
+End Function
+
+Public Sub Test_Query_Where_Select()
+
+    Dim tbl As cls_TBL
+    Set tbl = BuildQueryTestTable()
+
+    Dim q As cls_TBL_Query
+    Set q = tbl.CreateQuery
+
+    q.Where _
+        Array( _
+            Array("table", "IN", Array("Tbl1", "Tbl2")), _
+            Array("status", "=", "Active") _
+        )
+
+    q.SelectColumns _
+        Array( _
+            "table", _
+            "column" _
+        )
+
+
+    Debug.Print q.Result.rowCount = 3
+    Debug.Print q.Result.columnCount = 2
+
+
+
+End Sub
+
+'------------------------------
+' TEST_JOIN
+'------------------------------
+
+Public Sub test_join()
+
+    Dim tblA As cls_TBL
+    Dim tblB As cls_TBL
+
+    Set tblA = New cls_TBL
+    Set tblB = New cls_TBL
+
+
+    Dim ws As Worksheet
+    Set ws = GetCurrentWorkbook().Worksheets("Matrix_Join")
+
+
+    '------------------------------
+    ' Table A
+    '------------------------------
+    tblA.LoadFromWorksheet _
+        ws, _
+        1, _
+        2, _
+        1, _
+        12, _
+3
+
+
+    '------------------------------
+    ' Table B
+    '------------------------------
+    tblB.LoadFromWorksheet _
+        ws, _
+        1, _
+        2, _
+        5, _
+        12, _
+6
+
+
+    '------------------------------
+    ' JOIN
+    '------------------------------
+    Dim q As cls_TBL_Query
+    Set q = tblA.CreateQuery
+
+    ws.Range("A20").Select
+    
+    q.InnerJoin _
+        tblB, _
+        "CustomerId", _
+        "CustomerId"
+        
+
+    q.Result.OutputToRange Selection
+
+End Sub
+
+
+Public Sub Test_Query_Join_Matrix()
+
+    Dim tblA As cls_TBL
+    Dim tblB As cls_TBL
+
+    BuildJoinTestTables _
+        tblA, _
+        tblB
+
+
+    '========================================
+    ' T09 INNER JOIN
+    '========================================
+    Dim q As cls_TBL_Query
+    Set q = tblA.CreateQuery
+
+    q.InnerJoin _
+        tblB, _
+        "CustomerId", _
+        "CustomerId"
+
+    PrintTestResult _
+        "T09", _
+        10, _
+        q.Result.rowCount
+
+
+    '========================================
+    ' T10 LEFT JOIN
+    '========================================
+    Set q = tblA.CreateQuery
+
+    q.LeftJoin _
+        tblB, _
+        "CustomerId", _
+        "CustomerId"
+
+    PrintTestResult _
+        "T10", _
+        14, _
+        q.Result.rowCount
+
+
+    '========================================
+    ' T11 RIGHT JOIN
+    '========================================
+    Set q = tblA.CreateQuery
+
+    q.RightJoin _
+        tblB, _
+        "CustomerId", _
+        "CustomerId"
+
+    PrintTestResult _
+        "T11", _
+        14, _
+        q.Result.rowCount
+
+End Sub
+
+Public Sub Test_Query_Join_Detail_Matrix()
+
+    Dim tblA As cls_TBL
+    Dim tblB As cls_TBL
+
+    BuildJoinTestTables _
+        tblA, _
+        tblB
+
+
+    Dim q As cls_TBL_Query
+
+
+    '==================================================
+    ' T12 空JOINキー同士は一致しない
+    '==================================================
+    Set q = tblA.CreateQuery
+
+    q.InnerJoin _
+        tblB, _
+        "CustomerId", _
+        "CustomerId"
+
+    q.Where _
+        Array( _
+            Array("CustomerId", "=", "") _
+        )
+
+    PrintTestResult _
+        "T12", _
+        0, _
+        q.Result.rowCount
+
+
+    '==================================================
+    ' T13 多対1
+    '
+    ' Left : Cst5 が2件
+    ' Right: Cst5 が1件
+    ' Result = 2 × 1 = 2
+    '==================================================
+    Set q = tblA.CreateQuery
+
+    q.InnerJoin _
+        tblB, _
+        "CustomerId", _
+        "CustomerId"
+
+    q.Where _
+        Array( _
+            Array("CustomerId", "=", "Cst5") _
+        )
+
+    PrintTestResult _
+        "T13", _
+        2, _
+        q.Result.rowCount
+
+
+    '==================================================
+    ' T14 1対多
+    '
+    ' Left : Cst7 が1件
+    ' Right: Cst7 が2件
+    ' Result = 1 × 2 = 2
+    '==================================================
+    Set q = tblA.CreateQuery
+
+    q.InnerJoin _
+        tblB, _
+        "CustomerId", _
+        "CustomerId"
+
+    q.Where _
+        Array( _
+            Array("CustomerId", "=", "Cst7") _
+        )
+
+    PrintTestResult _
+        "T14", _
+        2, _
+        q.Result.rowCount
+
+
+    '==================================================
+    ' T15 多対多
+    '
+    ' Left : Cst10 が2件
+    ' Right: Cst10 が2件
+    ' Result = 2 × 2 = 4
+    '==================================================
+    Set q = tblA.CreateQuery
+
+    q.InnerJoin _
+        tblB, _
+        "CustomerId", _
+        "CustomerId"
+
+    q.Where _
+        Array( _
+            Array("CustomerId", "=", "Cst10") _
+        )
+
+    PrintTestResult _
+        "T15", _
+        4, _
+        q.Result.rowCount
+
+End Sub
+
+Private Sub PrintTestResult( _
+    ByVal testId As String, _
+    ByVal expected As Long, _
+    ByVal actual As Long _
+)
+
+    Debug.Print _
+        testId, _
+        "Expected=" & expected, _
+        "Actual=" & actual, _
+        IIf(expected = actual, "PASS", "FAIL")
+
+End Sub
+
+Private Sub PrintErrorTestResult( _
+    ByVal testId As String, _
+    ByVal expectedError As Long, _
+    ByVal actualError As Long _
+)
+
+    Debug.Print _
+        testId, _
+        "Expected=" & expectedError, _
+        "Actual=" & actualError, _
+        IIf( _
+            expectedError = actualError, _
+            "PASS", _
+            "FAIL" _
+        )
+
+End Sub
+
+Private Sub BuildJoinTestTables( _
+    ByRef tblA As cls_TBL, _
+    ByRef tblB As cls_TBL _
+)
+
+    Set tblA = New cls_TBL
+    Set tblB = New cls_TBL
+
+
+    tblA.InitHeaders _
+        Array( _
+            "OrderId", _
+            "CustomerId", _
+            "Amount" _
+        )
+
+    tblA.addRow Array("Ord1", "Cst1", "Amt1")
+    tblA.addRow Array("Ord2", "", "Amt2")
+    tblA.addRow Array("Ord3", "Cst3", "Amt3")
+    tblA.addRow Array("Ord4", "", "Amt4")
+    tblA.addRow Array("Ord5", "Cst5", "Amt5")
+    tblA.addRow Array("Ord6", "Cst5", "Amt6")
+    tblA.addRow Array("Ord7", "Cst7", "Amt7")
+    tblA.addRow Array("Ord8", "Cst8", "Amt8")
+    tblA.addRow Array("Ord9", "Cst9", "Amt9")
+    tblA.addRow Array("Ord10", "Cst10", "Amt10")
+    tblA.addRow Array("Ord11", "Cst10", "Amt11")
+
+
+    tblB.InitHeaders _
+        Array( _
+            "CustomerId", _
+            "CustomerName" _
+        )
+
+    tblB.addRow Array("Cst1", "CstN1")
+    tblB.addRow Array("Cst2", "CstN2")
+    tblB.addRow Array("", "CstN3")
+    tblB.addRow Array("", "CstN4")
+    tblB.addRow Array("Cst5", "CstN5")
+    tblB.addRow Array("Cst6", "CstN6")
+    tblB.addRow Array("Cst7", "CstN7")
+    tblB.addRow Array("Cst7", "CstN8")
+    tblB.addRow Array("Cst9", "CstN9")
+    tblB.addRow Array("Cst10", "CstN10A")
+    tblB.addRow Array("Cst10", "CstN10B")
+
+End Sub
+
+
+'------------------------------
+' TEST_COMPLEXJOIN
+'------------------------------
+
+Public Sub test_Complexjoin()
+
+    Dim tblA As cls_TBL
+    Dim tblB As cls_TBL
+
+    Set tblA = New cls_TBL
+    Set tblB = New cls_TBL
+
+
+    Dim ws As Worksheet
+    Set ws = GetCurrentWorkbook().Worksheets("Matrix_ComplexJoin")
+
+
+    '------------------------------
+    ' Table A
+    '------------------------------
+    tblA.LoadFromWorksheet _
+        ws, _
+        1, _
+        2, _
+        1, _
+        5, _
+3
+
+
+    '------------------------------
+    ' Table B
+    '------------------------------
+    tblB.LoadFromWorksheet _
+        ws, _
+        1, _
+        2, _
+        5, _
+        5, _
+7
+
+
+    '------------------------------
+    ' JOIN
+    '------------------------------
+    Dim q As cls_TBL_Query
+    Set q = tblA.CreateQuery
+
+    ws.Range("A9").Select
+    
+    q.RightJoin _
+        tblB, _
+        Array("Pdno", "Pono"), _
+        Array("OrderNo", "LineNo")
+
+
+    q.Result.OutputToRange Selection
+
+End Sub
+
+
+Public Sub Test_Query_CompositeJoin_Matrix()
+
+    Dim tblA As cls_TBL
+    Dim tblB As cls_TBL
+
+    BuildCompositeJoinTestTables _
+        tblA, _
+        tblB
+
+
+    Dim q As cls_TBL_Query
+
+
+    '========================================
+    ' T16 INNER JOIN
+    '========================================
+    Set q = tblA.CreateQuery
+
+    q.InnerJoin _
+        tblB, _
+        Array("OrderNo", "LineNo"), _
+        Array("OrderNo", "LineNo")
+
+    PrintTestResult _
+        "T16", _
+        3, _
+        q.Result.rowCount
+
+
+    '========================================
+    ' T17 LEFT JOIN
+    '========================================
+    Set q = tblA.CreateQuery
+
+    q.LeftJoin _
+        tblB, _
+        Array("OrderNo", "LineNo"), _
+        Array("OrderNo", "LineNo")
+
+    PrintTestResult _
+        "T17", _
+        4, _
+        q.Result.rowCount
+
+
+    '========================================
+    ' T18 RIGHT JOIN
+    '========================================
+    Set q = tblA.CreateQuery
+
+    q.RightJoin _
+        tblB, _
+        Array("OrderNo", "LineNo"), _
+        Array("OrderNo", "LineNo")
+
+    PrintTestResult _
+        "T18", _
+        4, _
+        q.Result.rowCount
+
+End Sub
+
+Private Sub BuildCompositeJoinTestTables( _
+    ByRef tblA As cls_TBL, _
+    ByRef tblB As cls_TBL _
+)
+
+    Set tblA = New cls_TBL
+    Set tblB = New cls_TBL
+
+
+    '========================================
+    ' Left Table
+    '========================================
+    tblA.InitHeaders _
+        Array( _
+            "OrderNo", _
+            "LineNo", _
+            "Amount" _
+        )
+
+    tblA.addRow _
+        Array( _
+            "O1", _
+            "10", _
+            "A1" _
+        )
+
+    tblA.addRow _
+        Array( _
+            "O1", _
+            "20", _
+            "A2" _
+        )
+
+    tblA.addRow _
+        Array( _
+            "O2", _
+            "10", _
+            "A3" _
+        )
+
+    tblA.addRow _
+        Array( _
+            "O2", _
+            "20", _
+            "A4" _
+        )
+
+
+    '========================================
+    ' Right Table
+    '========================================
+    tblB.InitHeaders _
+        Array( _
+            "OrderNo", _
+            "LineNo", _
+            "Product" _
+        )
+
+    tblB.addRow _
+        Array( _
+            "O1", _
+            "10", _
+            "P1" _
+        )
+
+    tblB.addRow _
+        Array( _
+            "O1", _
+            "30", _
+            "P2" _
+        )
+
+    tblB.addRow _
+        Array( _
+            "O2", _
+            "10", _
+            "P3" _
+        )
+
+    tblB.addRow _
+        Array( _
+            "O2", _
+            "20", _
+            "P4" _
+        )
+
+End Sub
+
+Public Sub Test_Query_CompositeJoin_DifferentHeaderNames()
+
+    Dim tblA As cls_TBL
+    Dim tblB As cls_TBL
+
+    BuildCompositeJoinDifferentHeaderTables _
+        tblA, _
+        tblB
+
+
+    Dim q As cls_TBL_Query
+
+
+    '========================================
+    ' T19 INNER JOIN
+    '========================================
+    Set q = tblA.CreateQuery
+
+    q.InnerJoin _
+        tblB, _
+        Array("Pdno", "Pono"), _
+        Array("OrderNo", "LineNo")
+
+    PrintTestResult _
+        "T19", _
+        3, _
+        q.Result.rowCount
+
+
+    '========================================
+    ' T20 LEFT JOIN
+    '========================================
+    Set q = tblA.CreateQuery
+
+    q.LeftJoin _
+        tblB, _
+        Array("Pdno", "Pono"), _
+        Array("OrderNo", "LineNo")
+
+    PrintTestResult _
+        "T20", _
+        4, _
+        q.Result.rowCount
+
+
+    '========================================
+    ' T21 RIGHT JOIN
+    '========================================
+    Set q = tblA.CreateQuery
+
+    q.RightJoin _
+        tblB, _
+        Array("Pdno", "Pono"), _
+        Array("OrderNo", "LineNo")
+
+    PrintTestResult _
+        "T21", _
+        4, _
+        q.Result.rowCount
+
+End Sub
+
+Private Sub BuildCompositeJoinDifferentHeaderTables( _
+    ByRef tblA As cls_TBL, _
+    ByRef tblB As cls_TBL _
+)
+
+    Set tblA = New cls_TBL
+    Set tblB = New cls_TBL
+
+
+    '========================================
+    ' Left Table
+    '========================================
+    tblA.InitHeaders _
+        Array( _
+            "Pdno", _
+            "Pono", _
+            "Amount" _
+        )
+
+    tblA.addRow Array("O1", "10", "A1")
+    tblA.addRow Array("O1", "20", "A2")
+    tblA.addRow Array("O2", "10", "A3")
+    tblA.addRow Array("O2", "20", "A4")
+
+
+    '========================================
+    ' Right Table
+    '========================================
+    tblB.InitHeaders _
+        Array( _
+            "OrderNo", _
+            "LineNo", _
+            "Product" _
+        )
+
+    tblB.addRow Array("O1", "10", "P1")
+    tblB.addRow Array("O1", "30", "P2")
+    tblB.addRow Array("O2", "10", "P3")
+    tblB.addRow Array("O2", "20", "P4")
+
+End Sub
+
+'
+'複数JOIN
+Public Sub Test_Query_MultiJoin()
+
+    Dim tblOrder As cls_TBL
+    Dim tblCustomer As cls_TBL
+    Dim tblProduct As cls_TBL
+
+    BuildMultiJoinTestTables _
+        tblOrder, _
+        tblCustomer, _
+        tblProduct
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblOrder.CreateQuery
+
+
+    q.InnerJoin _
+        tblCustomer, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    q.InnerJoin _
+        tblProduct, _
+        "ProductId", _
+        "ProductId"
+
+
+    PrintTestResult _
+        "T22", _
+        3, _
+        q.Result.rowCount
+        
+        
+    Debug.Assert _
+        q.Result.columnCount = 5
+    
+    Debug.Assert _
+        q.Result.GetValue(1, "CustomerName") = "Alice"
+    
+    Debug.Assert _
+        q.Result.GetValue(1, "ProductName") = "Pen"
+    
+    Debug.Assert _
+        q.Result.GetValue(3, "ProductName") = "Bag"
+
+
+
+End Sub
+
+
+Private Sub BuildMultiJoinTestTables( _
+    ByRef tblOrder As cls_TBL, _
+    ByRef tblCustomer As cls_TBL, _
+    ByRef tblProduct As cls_TBL _
+)
+
+    Set tblOrder = New cls_TBL
+    Set tblCustomer = New cls_TBL
+    Set tblProduct = New cls_TBL
+
+
+    '==================================================
+    ' Order
+    '==================================================
+    tblOrder.InitHeaders _
+        Array( _
+            "OrderNo", _
+            "CustomerId", _
+            "ProductId" _
+        )
+
+    tblOrder.addRow _
+        Array("O1", "C1", "P1")
+
+    tblOrder.addRow _
+        Array("O2", "C2", "P2")
+
+    tblOrder.addRow _
+        Array("O3", "C1", "P3")
+
+
+    '==================================================
+    ' Customer
+    '==================================================
+    tblCustomer.InitHeaders _
+        Array( _
+            "CustomerId", _
+            "CustomerName" _
+        )
+
+    tblCustomer.addRow _
+        Array("C1", "Alice")
+
+    tblCustomer.addRow _
+        Array("C2", "Bob")
+
+
+    '==================================================
+    ' Product
+    '==================================================
+    tblProduct.InitHeaders _
+        Array( _
+            "ProductId", _
+            "ProductName" _
+        )
+
+    tblProduct.addRow _
+        Array("P1", "Pen")
+
+    tblProduct.addRow _
+        Array("P2", "Note")
+
+    tblProduct.addRow _
+        Array("P3", "Bag")
+
+End Sub
+
+'JOIN後WHERE
+Public Sub Test_Query_JoinThenWhere()
+
+    Dim tblOrder As cls_TBL
+    Dim tblCustomer As cls_TBL
+    Dim tblProduct As cls_TBL
+
+    BuildMultiJoinTestTables _
+        tblOrder, _
+        tblCustomer, _
+        tblProduct
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblOrder.CreateQuery
+
+
+    ' Order + Customer
+    q.InnerJoin _
+        tblCustomer, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    ' JOIN後に追加された CustomerName をWHERE
+    q.Where _
+        Array( _
+            Array("CustomerName", "=", "Alice") _
+        )
+
+
+    PrintTestResult _
+        "T23", _
+        2, _
+        q.Result.rowCount
+
+
+    Debug.Assert _
+        q.Result.GetValue(1, "OrderNo") = "O1"
+
+    Debug.Assert _
+        q.Result.GetValue(2, "OrderNo") = "O3"
+
+End Sub
+
+
+'WHERE後JOIN
+Public Sub Test_Query_MultiJoinThenWhere()
+
+    Dim tblOrder As cls_TBL
+    Dim tblCustomer As cls_TBL
+    Dim tblProduct As cls_TBL
+
+    BuildMultiJoinTestTables _
+        tblOrder, _
+        tblCustomer, _
+        tblProduct
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblOrder.CreateQuery
+
+
+    q.InnerJoin _
+        tblCustomer, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    q.InnerJoin _
+        tblProduct, _
+        "ProductId", _
+        "ProductId"
+
+
+    q.Where _
+        Array( _
+            Array("CustomerName", "=", "Alice"), _
+            Array("ProductName", "=", "Bag") _
+        )
+
+
+    PrintTestResult _
+        "T24", _
+        1, _
+        q.Result.rowCount
+
+
+    Debug.Assert _
+        q.Result.GetValue(1, "OrderNo") = "O3"
+
+End Sub
+
+'WHERE => JOIN
+Public Sub Test_Query_WhereThenJoin()
+
+    Dim tblOrder As cls_TBL
+    Dim tblCustomer As cls_TBL
+    Dim tblProduct As cls_TBL
+
+    BuildMultiJoinTestTables _
+        tblOrder, _
+        tblCustomer, _
+        tblProduct
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblOrder.CreateQuery
+
+
+    q.Where _
+        Array( _
+            Array("CustomerId", "=", "C1") _
+        )
+
+
+    q.InnerJoin _
+        tblCustomer, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    PrintTestResult _
+        "T25", _
+        2, _
+        q.Result.rowCount
+
+End Sub
+
+'JOIN後SELECT
+Public Sub Test_Query_SelectAfterJoin()
+
+    Dim tblOrder As cls_TBL
+    Dim tblCustomer As cls_TBL
+    Dim tblProduct As cls_TBL
+
+    BuildMultiJoinTestTables _
+        tblOrder, _
+        tblCustomer, _
+        tblProduct
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblOrder.CreateQuery
+
+
+    q.InnerJoin _
+        tblCustomer, _
+        "CustomerId", _
+        "CustomerId"
+    
+    q.SelectColumns _
+        Array( _
+            "OrderNo", _
+            "CustomerName" _
+        )
+
+    PrintTestResult _
+        "T26-1", _
+        3, _
+        q.Result.rowCount
+        
+    PrintTestResult _
+        "T26-2", _
+        2, _
+        q.Result.columnCount
+        
+End Sub
+
+'JOIN => WHERE => SELECT
+Public Sub Test_Query_WhereSelectAfterJoin()
+
+    Dim tblOrder As cls_TBL
+    Dim tblCustomer As cls_TBL
+    Dim tblProduct As cls_TBL
+
+    BuildMultiJoinTestTables _
+        tblOrder, _
+        tblCustomer, _
+        tblProduct
+
+    Dim q As cls_TBL_Query
+    Set q = tblOrder.CreateQuery
+
+    q.InnerJoin _
+        tblCustomer, _
+        "CustomerId", _
+        "CustomerId"
+        
+    q.Where _
+        Array( _
+            Array("CustomerId", "=", "C1") _
+        )
+
+    q.SelectColumns _
+        Array( _
+            "OrderNo", _
+            "CustomerName" _
+        )
+
+    
+    PrintTestResult _
+        "T27-1", _
+        2, _
+        q.Result.rowCount
+    
+    PrintTestResult _
+        "T27-2", _
+        2, _
+        q.Result.columnCount
+        
+    Debug.Assert _
+    q.Result.GetValue(1, "OrderNo") = "O1"
+
+    Debug.Assert _
+    q.Result.GetValue(2, "OrderNo") = "O3"
+        
+        
+End Sub
+
+'ヘッダ重複エラー
+'==================================================
+' T28 JOIN結果のヘッダ重複エラー
+'==================================================
+Public Sub Test_Query_DuplicateHeaderError()
+
+    Dim tblOrder As cls_TBL
+    Dim tblCustomer As cls_TBL
+
+    Set tblOrder = New cls_TBL
+    Set tblCustomer = New cls_TBL
+
+
+    '----------------------------------------
+    ' Left
+    '----------------------------------------
+    tblOrder.InitHeaders _
+        Array( _
+            "OrderNo", _
+            "CustomerId", _
+            "Amount" _
+        )
+
+    tblOrder.addRow _
+        Array( _
+            "O1", _
+            "C1", _
+            "100" _
+        )
+
+
+    '----------------------------------------
+    ' Right
+    ' Amount がLeftと重複
+    '----------------------------------------
+    tblCustomer.InitHeaders _
+        Array( _
+            "CustomerId", _
+            "Amount" _
+        )
+
+    tblCustomer.addRow _
+        Array( _
+            "C1", _
+            "999" _
+        )
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblOrder.CreateQuery
+
+
+    On Error GoTo EXPECTED_ERROR
+
+
+    q.InnerJoin _
+        tblCustomer, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    ' エラーが発生しなかった
+    Debug.Print _
+        "T28", _
+        "Expected=Error", _
+        "Actual=No Error", _
+        "FAIL"
+
+    Exit Sub
+
+
+EXPECTED_ERROR:
+
+    PrintErrorTestResult _
+        "T28", _
+        vbObjectError + 2060, _
+        Err.Number
+
+End Sub
+
+'==================================================
+'T29 左右JOINキー数不一致
+'==================================================
+Public Sub Test_Query_JoinKeyCountMismatch()
+
+    Dim tblOrder As cls_TBL
+    Dim tblCustomer As cls_TBL
+    Dim tblProduct As cls_TBL
+
+    BuildMultiJoinTestTables _
+        tblOrder, _
+        tblCustomer, _
+        tblProduct
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblOrder.CreateQuery
+
+
+    On Error GoTo EXPECTED_ERROR
+
+
+    q.InnerJoin _
+        tblCustomer, _
+        Array("CustomerId"), _
+        Array("CustomerId", "CustomerName")
+
+
+    Debug.Print _
+        "T29", _
+        "Expected=Error", _
+        "Actual=No Error", _
+        "FAIL"
+
+    Exit Sub
+
+
+EXPECTED_ERROR:
+
+    PrintErrorTestResult _
+        "T29", _
+        vbObjectError + 2070, _
+        Err.Number
+
+End Sub
+
+
+'==================================================
+'T30 左JOINキー不存在
+'==================================================
+Public Sub Test_Query_LeftJoinKeyNotExist()
+
+    Dim tblOrder As cls_TBL
+    Dim tblCustomer As cls_TBL
+    Dim tblProduct As cls_TBL
+
+    BuildMultiJoinTestTables _
+        tblOrder, _
+        tblCustomer, _
+        tblProduct
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblOrder.CreateQuery
+
+
+    On Error GoTo EXPECTED_ERROR
+
+
+    q.InnerJoin _
+        tblCustomer, _
+        "CustomerId_NotExist", _
+        "CustomerId"
+
+
+    Debug.Print _
+        "T30", _
+        "Expected=" & CStr(vbObjectError + 2071), _
+        "Actual=No Error", _
+        "FAIL"
+
+    Exit Sub
+
+
+EXPECTED_ERROR:
+
+    PrintErrorTestResult _
+        "T30", _
+        vbObjectError + 2071, _
+        Err.Number
+
+    Debug.Print _
+        "    " & Err.Description
+
+End Sub
+
+'==================================================
+'T31 右JOINキー不存在
+'==================================================
+Public Sub Test_Query_RightJoinKeyNotExist()
+
+    Dim tblOrder As cls_TBL
+    Dim tblCustomer As cls_TBL
+    Dim tblProduct As cls_TBL
+
+    BuildMultiJoinTestTables _
+        tblOrder, _
+        tblCustomer, _
+        tblProduct
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblOrder.CreateQuery
+
+
+    On Error GoTo EXPECTED_ERROR
+
+
+    q.InnerJoin _
+        tblCustomer, _
+        "CustomerId", _
+        "CustomerId_NotExist"
+
+
+    Debug.Print _
+        "T31", _
+        "Expected=" & CStr(vbObjectError + 2072), _
+        "Actual=No Error", _
+        "FAIL"
+
+    Exit Sub
+
+
+EXPECTED_ERROR:
+
+    PrintErrorTestResult _
+        "T31", _
+        vbObjectError + 2072, _
+        Err.Number
+
+    Debug.Print _
+        "    " & Err.Description
+
+End Sub
+
+
+'==================================================
+'T32 rightTable Is Nothing
+'==================================================
+Public Sub Test_Query_RightTableIsNothing()
+
+    Dim tblOrder As cls_TBL
+    Dim tblCustomer As cls_TBL
+    Dim tblProduct As cls_TBL
+
+    BuildMultiJoinTestTables _
+        tblOrder, _
+        tblCustomer, _
+        tblProduct
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblOrder.CreateQuery
+
+
+    Dim nothingTable As cls_TBL
+    Set nothingTable = Nothing
+
+
+    On Error GoTo EXPECTED_ERROR
+
+
+    q.InnerJoin _
+        nothingTable, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    Debug.Print _
+        "T32", _
+        "Expected=" & CStr(vbObjectError + 2050), _
+        "Actual=No Error", _
+        "FAIL"
+
+    Exit Sub
+
+
+EXPECTED_ERROR:
+
+    PrintErrorTestResult _
+        "T32", _
+        vbObjectError + 2050, _
+        Err.Number
+
+    Debug.Print _
+        "    " & Err.Description
+
+End Sub
+
+'==================================================
+'T33-1 左3件 / 右0件 / INNER
+'==================================================
+Public Sub Test_Query_EmptyTable_Inner_LeftHasRows()
+
+    Dim tblLeft As cls_TBL
+    Dim tblRight As cls_TBL
+
+    BuildEmptyJoinTestTables _
+        tblLeft, _
+        tblRight, _
+        True, _
+        False
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblLeft.CreateQuery
+
+
+    q.InnerJoin _
+        tblRight, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    PrintTestResult _
+        "T33-1", _
+        0, _
+        q.Result.rowCount
+
+End Sub
+
+'==================================================
+'T33-2 左3件 / 右0件 / LEFT
+'==================================================
+Public Sub Test_Query_EmptyTable_Left_LeftHasRows()
+
+    Dim tblLeft As cls_TBL
+    Dim tblRight As cls_TBL
+
+    BuildEmptyJoinTestTables _
+        tblLeft, _
+        tblRight, _
+        True, _
+        False
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblLeft.CreateQuery
+
+
+    q.LeftJoin _
+        tblRight, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    PrintTestResult _
+        "T33-2", _
+        3, _
+        q.Result.rowCount
+
+End Sub
+
+'==================================================
+'T33-3 左3件 / 右0件 / RIGHT
+'==================================================
+Public Sub Test_Query_EmptyTable_Right_LeftHasRows()
+
+    Dim tblLeft As cls_TBL
+    Dim tblRight As cls_TBL
+
+    BuildEmptyJoinTestTables _
+        tblLeft, _
+        tblRight, _
+        True, _
+        False
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblLeft.CreateQuery
+
+
+    q.RightJoin _
+        tblRight, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    PrintTestResult _
+        "T33-3", _
+        0, _
+        q.Result.rowCount
+
+End Sub
+
+'==================================================
+'T33-4 左0件 / 右3件 / INNER
+'==================================================
+Public Sub Test_Query_EmptyTable_Inner_RightHasRows()
+
+    Dim tblLeft As cls_TBL
+    Dim tblRight As cls_TBL
+
+    BuildEmptyJoinTestTables _
+        tblLeft, _
+        tblRight, _
+        False, _
+        True
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblLeft.CreateQuery
+
+
+    q.InnerJoin _
+        tblRight, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    PrintTestResult _
+        "T33-4", _
+        0, _
+        q.Result.rowCount
+
+End Sub
+
+
+'==================================================
+'T33-5 左0件 / 右3件 / LEFT
+'==================================================
+Public Sub Test_Query_EmptyTable_Left_RightHasRows()
+
+    Dim tblLeft As cls_TBL
+    Dim tblRight As cls_TBL
+
+    BuildEmptyJoinTestTables _
+        tblLeft, _
+        tblRight, _
+        False, _
+        True
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblLeft.CreateQuery
+
+
+    q.LeftJoin _
+        tblRight, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    PrintTestResult _
+        "T33-5", _
+        0, _
+        q.Result.rowCount
+
+End Sub
+
+
+'==================================================
+'T33-6 左0件 / 右3件 / RIGHT
+'==================================================
+Public Sub Test_Query_EmptyTable_Right_RightHasRows()
+
+    Dim tblLeft As cls_TBL
+    Dim tblRight As cls_TBL
+
+    BuildEmptyJoinTestTables _
+        tblLeft, _
+        tblRight, _
+        False, _
+        True
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblLeft.CreateQuery
+
+
+    q.RightJoin _
+        tblRight, _
+        "CustomerId", _
+        "CustomerId"
+
+
+    PrintTestResult _
+        "T33-6", _
+        3, _
+        q.Result.rowCount
+
+End Sub
+
+Private Sub BuildEmptyJoinTestTables( _
+    ByRef tblLeft As cls_TBL, _
+    ByRef tblRight As cls_TBL, _
+    ByVal addLeftRows As Boolean, _
+    ByVal addRightRows As Boolean _
+)
+
+    Set tblLeft = New cls_TBL
+    Set tblRight = New cls_TBL
+
+
+    tblLeft.InitHeaders _
+        Array( _
+            "OrderNo", _
+            "CustomerId" _
+        )
+
+    tblRight.InitHeaders _
+        Array( _
+            "CustomerId", _
+            "CustomerName" _
+        )
+
+
+    If addLeftRows Then
+
+        tblLeft.addRow Array("O1", "C1")
+        tblLeft.addRow Array("O2", "C2")
+        tblLeft.addRow Array("O3", "C3")
+
+    End If
+
+
+    If addRightRows Then
+
+        tblRight.addRow Array("C1", "Alice")
+        tblRight.addRow Array("C2", "Bob")
+        tblRight.addRow Array("C3", "Carol")
+
+    End If
+
+End Sub
+
+
+'==================================================
+'T34 型違い比較
+'==================================================
+Public Sub Test_Query_TypeMismatch_NumberAndString()
+
+    Dim tblLeft As cls_TBL
+    Dim tblRight As cls_TBL
+
+    BuildTypeMismatchJoinTestTables _
+        tblLeft, _
+        tblRight
+
+    tblRight.addRow _
+        Array( _
+            "10", _
+            "R1" _
+        )
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblLeft.CreateQuery
+
+    q.InnerJoin _
+        tblRight, _
+        "KeyValue", _
+        "KeyValue"
+
+
+    PrintTestResult _
+        "T34-1", _
+        1, _
+        q.Result.rowCount
+
+End Sub
+
+Public Sub Test_Query_TypeMismatch_LeadingZero()
+
+    Dim tblLeft As cls_TBL
+    Dim tblRight As cls_TBL
+
+    BuildTypeMismatchJoinTestTables _
+        tblLeft, _
+        tblRight
+
+    tblRight.addRow _
+        Array( _
+            "010", _
+            "R1" _
+        )
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblLeft.CreateQuery
+
+    q.InnerJoin _
+        tblRight, _
+        "KeyValue", _
+        "KeyValue"
+
+
+    PrintTestResult _
+        "T34-2", _
+        0, _
+        q.Result.rowCount
+
+End Sub
+
+Public Sub Test_Query_TypeMismatch_Trim()
+
+    Dim tblLeft As cls_TBL
+    Dim tblRight As cls_TBL
+
+    BuildTypeMismatchJoinTestTables _
+        tblLeft, _
+        tblRight
+
+    tblRight.addRow _
+        Array( _
+            " 10 ", _
+            "R1" _
+        )
+
+
+    Dim q As cls_TBL_Query
+    Set q = tblLeft.CreateQuery
+
+    q.InnerJoin _
+        tblRight, _
+        "KeyValue", _
+        "KeyValue"
+
+
+    PrintTestResult _
+        "T34-3", _
+        1, _
+        q.Result.rowCount
+
+End Sub
+
+Private Sub BuildTypeMismatchJoinTestTables( _
+    ByRef tblLeft As cls_TBL, _
+    ByRef tblRight As cls_TBL _
+)
+
+    Set tblLeft = New cls_TBL
+    Set tblRight = New cls_TBL
+
+
+    tblLeft.InitHeaders _
+        Array( _
+            "KeyValue", _
+            "LeftValue" _
+        )
+
+    tblLeft.addRow _
+        Array( _
+            10, _
+            "L1" _
+        )
+
+
+    tblRight.InitHeaders _
+        Array( _
+            "KeyValue", _
+            "RightValue" _
+        )
+
+End Sub
+
+
+
+
+
+
+
+'========================================
+' Test_clsQueryForGit.bas
+'========================================
+
+Public Sub test_Cdsview()
+
+    Dim tblFrom As cls_TBL
+    Dim tblDest As cls_TBL
+
+    Set tblFrom = New cls_TBL
+    Set tblDest = New cls_TBL
+
+    Dim wsFrom As Worksheet
+    Dim wsDest As Worksheet
+    
+    Set wsFrom = Workbooks("CDSVIEW一覧.xlsx").Worksheets("Sheet1")
+    Set wsDest = Workbooks("ExDSL_202609.xlsx").Worksheets("TEST_TARGET_ITEM_LIST")
+   
+   
+'    '------------------------------
+'    ' Table From
+'    '------------------------------
+'    tblFrom.LoadFromWorksheet _
+'        wsFrom, _
+'        headerRow:=3, _
+'        dataStartRow:=4, _
+'        colStart:=wsFrom.Columns("C").column, _
+'        rowEnd:=13, _
+'        colEnd:=wsFrom.Columns("F").column
+'
+'
+'    '------------------------------
+'    ' Table Dest
+'    '------------------------------
+'    tblDest.LoadFromWorksheet _
+'        wsDest, _
+'        headerRow:=4, _
+'        dataStartRow:=5, _
+'        colStart:=wsDest.Columns("B").column, _
+'        rowEnd:=10, _
+'        colEnd:=wsDest.Columns("E").column
+
+
+    Dim headerRow As Long
+    Dim dataStartRow As Long
+    Dim rowEnd As Long
+    Dim colStart As Long
+    Dim colEnd As Long
+    Dim rngHeader As Range
+    Dim rngData As Range
+        
+'    '------------------------------
+'    ' Table From
+'    '------------------------------
+    With wsFrom
+
+        headerRow = 3
+        dataStartRow = 4
+        rowEnd = 13
+        colStart = .Columns("C").column
+        colEnd = .Columns("F").column
+        
+        Set rngHeader = .Range( _
+            .Cells(headerRow, colStart), _
+            .Cells(headerRow, colEnd) _
+        )
+    
+        tblFrom.InitHeaders rngHeader.Value2
+        
+        Set rngData = .Range( _
+            .Cells(dataStartRow, colStart), _
+            .Cells(rowEnd, colEnd) _
+        )
+    
+        tblFrom.AddRows rngData.Value2
+    
+    End With
+
+'    '------------------------------
+'    ' Table Dest
+'    '------------------------------
+    With wsDest
+
+        headerRow = 4
+        dataStartRow = 5
+        rowEnd = 10
+        colStart = .Columns("B").column
+        colEnd = .Columns("E").column
+        
+        Set rngHeader = .Range( _
+            .Cells(headerRow, colStart), _
+            .Cells(headerRow, colEnd) _
+        )
+    
+        tblDest.InitHeaders rngHeader.Value2
+        
+        Set rngData = .Range( _
+            .Cells(dataStartRow, colStart), _
+            .Cells(rowEnd, colEnd) _
+        )
+    
+        tblDest.AddRows rngData.Value2
+    
+    End With
+
+
+    '------------------------------
+    ' JOIN
+    '------------------------------
+    Dim q As cls_TBL_Query
+    Set q = tblFrom.CreateQuery
+
+    q.LeftJoin _
+        tblDest, _
+        Array("F-Table", "F-Column"), _
+        Array("D-Table", "D-Column")
+        
+    Dim outRange As Range
+    Set outRange = wsDest.Range("B15")
+    
+    q.Result.OutputToRange outRange
+
+End Sub
+
+Public Sub test_Koumoku()
+
+    Dim tblSheet1 As cls_TBL
+    Dim tblSheet2 As cls_TBL
+
+    Set tblSheet1 = New cls_TBL
+    Set tblSheet2 = New cls_TBL
+
+    Dim wsSheet1 As Worksheet
+    Dim wsSheet2 As Worksheet
+    Dim wsOut As Worksheet
+    
+    With Workbooks("項目移送表.xlsx")
+        Set wsSheet1 = .Worksheets("Sheet1")
+        Set wsSheet2 = .Worksheets("Sheet2")
+    End With
+    
+    Set wsOut = Workbooks("ExDSL_202609.xlsx").Worksheets("TEST_TARGET_ITEM_LIST")
+   
+   
+'    '------------------------------
+'    ' Table From
+'    '------------------------------
+'    tblSheet1.LoadFromWorksheet _
+'        wsSheet1, _
+'        headerRow:=3, _
+'        dataStartRow:=4, _
+'        colStart:=wsSheet1.Columns("C").column, _
+'        rowEnd:=13, _
+'        colEnd:=wsSheet1.Columns("F").column
+'
+'
+'    '------------------------------
+'    ' Table Dest
+'    '------------------------------
+'    tblSheet2.LoadFromWorksheet _
+'        wsSheet2, _
+'        headerRow:=4, _
+'        dataStartRow:=5, _
+'        colStart:=wsSheet2.Columns("B").column, _
+'        rowEnd:=10, _
+'        colEnd:=wsSheet2.Columns("E").column
+
+
+    Dim headerRow As Long
+    Dim dataStartRow As Long
+    Dim rowEnd As Long
+    Dim colStart As Long
+    Dim colEnd As Long
+    Dim rngHeader As Range
+    Dim rngData As Range
+        
+'    '------------------------------
+'    ' Table From
+'    '------------------------------
+    With wsSheet1
+
+        headerRow = 3
+        dataStartRow = 8
+        rowEnd = 15
+        colStart = .Columns("B").column
+        colEnd = .Columns("G").column
+        
+        Set rngHeader = .Range( _
+            .Cells(headerRow, colStart), _
+            .Cells(headerRow, colEnd) _
+        )
+    
+        tblSheet1.InitHeaders rngHeader.Value2
+        
+        Set rngData = .Range( _
+            .Cells(dataStartRow, colStart), _
+            .Cells(rowEnd, colEnd) _
+        )
+    
+        tblSheet1.AddRows rngData.Value2
+    
+    End With
+
+'    '------------------------------
+'    ' Table Dest
+'    '------------------------------
+    With wsSheet2
+
+
+        headerRow = 3
+        dataStartRow = 8
+        rowEnd = 15
+        colStart = .Columns("B").column
+        colEnd = .Columns("G").column
+        
+        Set rngHeader = .Range( _
+            .Cells(headerRow, colStart), _
+            .Cells(headerRow, colEnd) _
+        )
+    
+        tblSheet2.InitHeaders rngHeader.Value2
+        
+        Set rngData = .Range( _
+            .Cells(dataStartRow, colStart), _
+            .Cells(rowEnd, colEnd) _
+        )
+    
+        tblSheet2.AddRows rngData.Value2
+    
+    End With
+
+
+    '------------------------------
+    ' JOIN
+    '------------------------------
+    Dim q As cls_TBL_Query
+    Set q = tblSheet1.CreateQuery
+
+    q.LeftJoin _
+        tblSheet2, _
+        Array("F-Table", "F-Column"), _
+        Array("D-Table", "D-Column")
+        
+
+
+        
+    Dim outRange As Range
+    Set outRange = wsSheet2.Range("B15")
+    
+    q.Result.OutputToRange outRange
+
+End Sub
+
+
+
+'========================================
+' Test_clsTBL.bas
+'========================================
+
+
+Public Sub testInit()
+
+    On Error GoTo lbl_end
+
+    Dim tbl As cls_TBL
+    Set tbl = New cls_TBL
+
+    tbl.InitHeaders Array("FileName", "Scope", "ProcedureType", "ProcedureName", "Role", "Summary")
+    
+    tbl.addRow Array( _
+        "Entry_Config.bas", _
+        "Public", _
+        "Function", _
+        "GetCurrentWorkbook", _
+        "Config", _
+        "Workbookを取得" _
+    )
+
+Exit Sub
+
+
+lbl_end:
+    Debug.Print Err.Description
+
+End Sub
+
+Public Sub testAddRows()
+
+    On Error GoTo lbl_end
+
+    Dim tbl As cls_TBL
+    Set tbl = New cls_TBL
+
+    tbl.InitHeaders Array("ID", "COL1", "COL2")
+    
+    Dim arr(1 To 3, 1 To 3) As Variant
+
+    arr(1, 1) = "商品コード1"
+    arr(1, 2) = "商品コード2"
+    arr(1, 3) = "商品コード3"
+
+    arr(2, 1) = "AAA1"
+    arr(2, 2) = "AAA2"
+    arr(2, 3) = "AAA3"
+
+    arr(3, 1) = "BBB1"
+    arr(3, 2) = "BBB2"
+    arr(3, 3) = "BBB3"
+    
+    
+    tbl.AddRows arr
+
+Exit Sub
+
+
+lbl_end:
+    Debug.Print Err.Description
+
+End Sub
+
+Public Sub testInit_NG_DuplicateHeader()
+' エラーRise ＝＞ 出力 「Header duplicated: FileName」
+
+    On Error GoTo lbl_end
+
+    Dim tbl As cls_TBL
+    Set tbl = New cls_TBL
+
+    tbl.InitHeaders Array("FileName", "FileName", "Scope", "ProcedureType", "ProcedureName", "Role", "Summary")
+    
+'    Debug.Print tbl.RowCount
+'    Debug.Print tbl.ColumnCount
+'    Debug.Print tbl.HeaderIndex("COL_A")
+
+
+Exit Sub
+
+lbl_end:
+    Debug.Print Err.Description
+
+End Sub
+
+
+Public Sub test_CreateQuery()
+
+
+    Dim tbl As cls_TBL
+    Set tbl = New cls_TBL
+
+    Dim ws As Worksheet
+    Set ws = _
+        Workbooks("CDSVIEW一覧.xlsx") _
+        .Worksheets("Sheet1")
+
+    Dim headerRow As Long
+    Dim dataStartRow As Long
+    Dim colStart As Long
+    Dim rowEnd As Long
+    Dim colEnd As Long
+
+
+    ' 資料形式に合わせて上位側で決定
+    headerRow = 1
+    dataStartRow = 2
+    colStart = 1
+    rowEnd = 11
+    colEnd = 2
+
+
+    tbl.LoadFromWorksheet _
+        ws, _
+        headerRow, _
+        dataStartRow, _
+        colStart, _
+        rowEnd, _
+        colEnd
+
+    
+    Dim q As cls_TBL_Query
+    Set q = tbl.CreateQuery
+    
+    q.SelectColumns Array("table", "column")
+    
+    q.Where _
+        Array( _
+            Array("table", "=", "Tbl1") _
+        )
+    
+    q.Result.OutputToRange Selection
+
+
+
+End Sub
+
+
+
+'========================================
+' Test_ExDSL.bas
+'========================================
+Public Sub TEST_MACRO(Optional ByVal str As String, _
+                        Optional ByVal num As String, _
+                        Optional ByVal num2 As String)
+
+Debug.Print "ExDSL = " & ActiveCell.Value
+Debug.Print "str = " & str
+Debug.Print "num = " & num
+Debug.Print "num2 = " & num2
+
+End Sub
+
+
+
+
